@@ -15,6 +15,8 @@ INSTALLED_APPS = [
     "corsheaders",
     "rest_framework",
     "api",
+    "agent",
+    "documents",
 ]
 
 MIDDLEWARE = [
