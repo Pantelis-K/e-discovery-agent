@@ -1,6 +1,20 @@
-.env
+# datasets + build artifacts — never commit
+# Ignore everything in data
+data/**
+
+# But keep directories so Git can traverse them
+!data/**/
+
+# Keep Python files
+!data/**/*.py
+
+# belt-and-suspenders if anyone drops these at root
+*.db
+*.db-wal
+*.db-shm
+chroma/
+
+# python
+.venv/
 __pycache__/
 *.pyc
-.DS_Store
-node_modules/
-.venv/

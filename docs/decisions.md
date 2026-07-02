@@ -1,9 +1,193 @@
 # Decision Log
 
-Entries follow the format:
+Entries follow the format (ordered most recent to least):
 **Date | Decision title**
 - Context:
 - Options considered:
 - Decision:
 - Rationale:
 - Revisit if:
+
+## 2026-07-02 — Corpus re-confirmed; evaluation methodology fixed; plan recompressed to 2 days
+ 
+**Context.**
+Two days remain (was 3.5). Nothing is built yet; qrels not downloaded. The corpus
+decision was explicitly re-opened by the team ("prefer restarting with a
+straightforward extraction plan than fighting messiness, if an alternative fits").
+The spec's biggest gap was that "evaluate on the assessed pool" never specified how
+the agent runs over it — the exact class of eval-day surprise the revision-2 pivot
+was meant to eliminate. Verification pass run against primary TREC sources (official
+TREC 2010 overview PDF; NIST-hosted qrels page, readme, `dolegal10eval.sh`,
+`calc2.c`) before deciding anything.
+ 
+**Verified facts (primary sources).**
+1. `qrels.t10legallearn.gz` exists at trec.nist.gov/data/legal/10/ (mirror at UMD
+   legal10-results). 97MB gz ⇒ one row per document per topic (5.48M rows), not
+   judgments only. Format inferred from the official toolkit: join key
+   `topic:docid`; stratum ∈ {100, 1000, 10000, 1000000}; rel ∈ {−1 unjudged,
+   0 non-relevant, 1 relevant}. Columns to be confirmed on download (Day-1 hour 1).
+2. Doc-id format in the toolkit's own example (`3.1131864.J0J3...`) = on-disk
+   filename stem. Join holds by construction.
+3. Gold standard: stratified sample ~2,720 docs/topic, 3 law-trained assessors,
+   majority vote. ~1.25% of docs coded "broken" — corroborates our ~1.7% observed
+   binary corruption.
+4. Topic 204 estimated relevant = 6,362 (hardcoded 6361.83 in official calc2.c). ✓
+5. **Correction to the 2026-07-01 entry:** "≈50% recall at a 3% cut" was the best
+   run's cross-topic AVERAGE. On Topic 204 specifically: best recall at the 3% cut
+   was 29.8%; best actual F1 on 204 was 26.0% (best hypothetical 26.6%). Topic 204
+   was among the hardest 2010 topics. Strengthens the honest-numbers framing;
+   forbids same-axis comparisons with TREC systems.
+6. `seed.csv` in data/raw ≙ the Learning-task seed set. Topic 204: 59 relevant +
+   1,132 non-relevant = 1,191 labelled docs (overview Table 2). Available now,
+   before qrels download. `docids-v2.csv.bz2` = canonical doc-id↔SDOC map;
+   `msg-uniqmsg` / `uniqmsg` = duplicate maps (usable as ingestion integrity
+   checks).
+7. EDRM v2 XML edition carries threading info and Internet headers (ZL/EDRM launch
+   materials) — the text bundle's missing Message-ID/addresses is a rendering
+   artifact, not a corpus property. XML is ~74GB.
+8. Privilege ground truth exists: Interactive-task Topic 304 message-level qrels
+   (`qrel_leg_int_2010_msg_post.txt`, small plain-text, NIST legal10 page).
+**Decision 1 — Corpus: stay on EDRM v2 text bundle + Topic 204 (re-opened, re-closed).**
+Options considered:
+- A. Stay (SELECTED). Extraction is a solved problem: DATA_REFERENCE.md reduces the
+  loader to seven deterministic rules; ~150-line parser. Messiness is rewarded by
+  the brief ("the bigger and messier, the better the story") and becomes demo
+  material (defensive loader, participants_unresolved flag).
+- B. CMU/CALO maildir. Clean headers, but no ground truth mapping exists (TREC's own
+  statement, re-confirmed). Kills the benchmark = kills the defensibility spine
+  (Technical 35% + Impact 30%). Rejected.
+- C. EDRM v2 XML. Recovers threading/addresses but ~74GB: download + parse burns a
+  day of two, and disk comfort is limited. Rejected; recorded as the production
+  ingest path in future work.
+- D. Other labelled corpora (e.g. TREC Total Recall / Jeb Bush emails). Would
+  restart the entire data investigation under time pressure with uncertain current
+  availability. Rejected.
+**Decision 2 — Evaluation methodology: two separate honest metrics; eval decoupled from full ingestion.**
+Options considered:
+- (a) Headless classification of the judged pool. Clean number; doesn't test search;
+  needs an explicit gate-bypass story.
+- (b) Full agentic run over the corpus, score touched docs. Recall structurally tiny
+  (agent reviews hundreds of 455K; ~6,362 relevant exist); number misleadingly bad.
+- (c) SELECTED — hybrid:
+  Metric 1 (accuracy): headless **eval mode** — `classify_relevance` (Haiku, prompt
+  v1) over judged Topic-204 base emails read straight from disk; recall-first
+  report "on the assessed gold sample, N docs." Plan A = full pool (~£5–7, gated by
+  a 50-doc cost pilot); Plan B = all judged-relevant + fixed-seed non-relevant
+  sample, exact recall + derived precision-in-pool. Bypassing human gates is
+  legitimate because eval mode measures the classifier; nothing commits.
+  Metric 2 (impact): measured docs/hour throughput (eval concurrency + live loop);
+  deck projections derive only from measured quantities.
+  Explicit non-claim: end-to-end collection recall (different quantity from TREC's
+  ranked-retrieval recall; same-axis comparison would be an own-goal).
+  Seed hygiene: seeds never in prompts; used for dev sanity checks + demo doc
+  selection; seed/qrels overlap excluded from reported metrics.
+Rationale: kills the last "uncomputable on eval day" risk (format known in advance,
+counts verified hour 1); the accuracy number survives an embedding-run failure;
+budget fits the £10–15 envelope with a pilot gate.
+**Decision 3 — 2-day plan; cuts anchored to judging weights.**
+Submission is repo + deck + recorded video ⇒ the recording is the deliverable
+(retakes allowed); hard stop building ~20:00 Day 2, then video → deck → README.
+Additional cuts beyond the revision-2 defer list: `find_thread` cut entirely; audit
+query bar cut (also resolves the §4/§8 contradiction); CN→display-name corpus map
+cut (lawyer list hand-carries CN codes for ~10 known counsel — several custodians
+were Enron lawyers: Haedicke, Shackleton, Sager, Sanders, Mann, Taylor, Jones,
+Nemec); reversal demoted to stretch; pause/resume UI cut (schema keeps resumability).
+Never cut: qrels join + eval, corrections flow + corrections viewer, batch approval
+gates, reasoning stream — these carry Technical (35%), Control (20%), Demo (20%),
+and the eval underwrites Impact (30%).
+ 
+**Revisit conditions.**
+- Day-1 hour-1: if qrels columns differ from the inferred format, adapt the parser
+  (the eval toolkit source is the reference); if judged-relevant base emails for
+  204 < ~150, execute the Topic 202 fallback the same day.
+- If the 50-doc pilot shows per-doc cost >2× estimate, switch to Plan B immediately.
+- If `seed.csv` is not the seed set (schema check hour 1), lose nothing — it was an
+  accelerator, not a dependency.
+- If overnight full-corpus embedding fails, demo on the ingested subset and state
+  the actual count on the slide; do not delay the eval, which doesn't depend on it.
+
+
+## 2026-07-01 — Corpus & evaluation ground truth: CMU/CALO → EDRM v2 text bundle; topic → TREC 204
+
+**Context.**
+Original spec (§5) ingested the CMU/CALO Enron maildir (~500K messages) and
+scored agent relevance decisions against TREC Legal Track 2010 qrels, treating
+doc-id alignment as a ~30-min "normalisation step." Demo (§7) was framed on
+"Topic 207 = Special Purpose Entity transactions," with Topic 206 (Chewco/
+Fastow) as backup. The recall/precision number is the pitch's defensibility
+spine.
+
+**Issue discovered (before building — verified against primary TREC sources
+and direct disk inspection).**
+1. No cross-corpus mapping exists. The qrels key to the EDRM collection, NOT to
+   CMU/CALO; TREC itself lists "the lack of a mapping between this collection
+   and other Enron email collections" as a known shortcoming. The planned
+   normalisation rested on a crosswalk that does not exist.
+2. Topic numbers were wrong. Verified from the TREC 2009 overview: 201=prepay,
+   202=FAS 140/125, 203=financial forecasts, 204=document destruction/
+   retention, 205=energy schedules/bids, 206=analyst communications,
+   207=fantasy football. There is NO SPE/Chewco/LJM topic. The demo's central
+   framing was built on a misremembered topic.
+3. Consequence: the planned metric could not have been computed against the
+   ingested corpus — discoverable only on eval day, or worse, yielding a
+   true-looking but meaningless number.
+
+**Options considered.**
+- A. Stay on CALO + hand-label ~100–200 docs. Rejected: manual effort blows the
+     timeline; loses external credibility; discards the real benchmark.
+- B. Stay on CALO + fuzzy-map qrels across collections. Rejected: research-grade
+     effort; TREC states the mapping doesn't exist.
+- C. Ingest full EDRM (~74GB XML / ~100GB PST). Rejected as framed: download/
+     parse/storage blows the timeline; drags attachment handling (a cut feature)
+     back into scope.
+- D. EDRM v2 de-duplicated 596MB TEXT bundle + real qrels, eval on the assessed
+     pool, topic 204. SELECTED.
+
+**Decision.**
+1. Corpus: drop CMU/CALO. Use the EDRM Enron v2 de-duplicated text-rendering
+   bundle (`edrmv2txt-v2.tar.bz2`, 596MB → 685,592 .txt documents on disk =
+   455,449 canonical messages + 230,143 attachments; matches the official TREC
+   2010 collection count exactly). Ingest email messages as the searchable
+   haystack; no per-custodian selection.
+2. Evaluation: score against the TREC 2010 Learning-task gold standard
+   (`qrels.t10legallearn`), which keys to the same doc-ids as the on-disk
+   filenames (join verified: 471/471 on a Topic-204 sample). TREC judged a
+   stratified sample (~2,720 docs/topic, 3 assessors, majority vote), so
+   evaluate on the assessed pool (both responsive and non-responsive present),
+   restricted to base-email doc-ids. Report as "on the Topic 204 assessed
+   gold sample," NOT as an official weighted population estimate.
+3. Demo topic: Topic 204 — documents relating to the destruction, retention,
+   deletion, or shredding of evidence. Chosen over 201 (prepays) / 202 (FAS
+   140) because it needs no finance/accounting knowledge to follow, is a vivid
+   spoliation story, keeps privilege thematically central (legal-hold
+   instructions from counsel), and has a healthy gold pool (~6,362 estimated
+   relevant documents in the collection). Original SPE framing retired.
+4. Attachments: remain out of scope (defer list preserved). Attachment doc-ids
+   carry a `.1`/`.2` suffix, so filtering both ingest and eval to base-emails
+   is a trivial string rule.
+5. Metric framing (§7): lead with recall + human-in-the-loop, not a high F1.
+   TREC 2010's best systems scored modestly on 204 (≈50% recall at a 3% cut;
+   low-20s F1); a placeholder F1 of 0.83 is not credible against this benchmark
+   and would invite a damaging question. Report honest numbers on the assessed
+   pool; carry the pitch on recall and throughput.
+
+**Rationale.**
+Resolves the mapping problem at root — EDRM is the corpus the qrels were built
+on, so alignment is by construction. Preserves both pitch pillars: scalability/
+throughput (agent runs over the full corpus) and a credible accuracy number
+(real TREC judgments, zero manual labelling). Smaller/simpler to ingest than
+CALO (596MB pre-extracted, de-duplicated text vs a 1.4GB maildir needing
+encoding-hell parsing). Topic 204 is legible to a non-technical judge.
+
+**Revisit condition.**
+- Address resolution: EDRM text renders internal participants inconsistently
+  (clean SMTP / Exchange X.500 CN= / bare display name) with no directory table
+  shipped in the corpus. If DATA_REFERENCE.md confirms CN= is not resolvable
+  from the files alone, check_privilege_signals must match on name + CN= + email
+  aliases (lawyer list carries all three forms per person); a corpus-scan alias
+  bootstrap is an optional enhancement. FINALISE once DATA_REFERENCE.md lands.
+- Threading: EDRM text has no Message-ID/In-Reply-To header. find_thread must
+  rely on normalised-subject + participant overlap only — demoted from
+  "reliable" to "best-effort." Confirm against DATA_REFERENCE.md.
+- If Topic 204's assessed gold pool proves too small/skewed once qrels.
+  t10legallearn is counted, fall back to Topic 202 (FAS 140).
