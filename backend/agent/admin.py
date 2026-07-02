@@ -15,3 +15,4 @@ class AgentStepAdmin(admin.ModelAdmin):
     list_filter = ("run_id", "tool", "started_at")
     search_fields = ("run_id", "tool")
     readonly_fields = ("step_id", "run_id", "started_at")
+

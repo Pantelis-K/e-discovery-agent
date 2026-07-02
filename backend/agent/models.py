@@ -1,4 +1,5 @@
 from django.db import models
+from documents.models import Document
 
 
 class AgentRun(models.Model):
@@ -38,12 +39,12 @@ class AgentStep(models.Model):
         pass
 
     def __str__(self):
-        return f"AgentStep {self.step_id} for Run {self.run.run_id} (Tool: {self.tool_name})"
+        return f"AgentStep {self.step_id} for Run {self.run_id} (Tool: {self.tool})"
     
 class Decision(models.Model):
     decision_id = models.AutoField(primary_key=True)
     run_id = models.ForeignKey(AgentRun, on_delete=models.CASCADE, related_name="decisions")
-    doc_id = models.CharField(max_length=255) # i think this should be foreign key to Document model, but for now it's just a string
+    doc_id = models.ForeignKey(Document, on_delete=models.CASCADE, related_name="decisions")
     proposed_at = models.DateTimeField(auto_now_add=True)
     proposed_by = models.CharField(max_length=255)  # e.g., "agent" or "human"
     relevance = models.BooleanField()
@@ -60,12 +61,12 @@ class Decision(models.Model):
         pass
 
     def __str__(self):
-        return f"Decision {self.decision_id} for Step {self.step.step_id} (Type: {self.decision_type})"
+        return f"Decision {self.decision_id} for Doc {self.doc_id} (Relevance: {self.relevance})"
     
 class Correction(models.Model):
     correction_id = models.AutoField(primary_key=True)
     run_id = models.ForeignKey(AgentRun, on_delete=models.CASCADE, related_name="corrections")
-    doc_id = models.CharField(max_length=255) # i think this should be foreign key to Document model, but for now it's just a string
+    doc_id = models.ForeignKey(Document, on_delete=models.CASCADE, related_name="corrections")
     field = models.CharField(max_length=255)  # e.g., "relevance", "privilege", "issue_tags"
     original_value = models.CharField(max_length=255)
     corrected_value = models.CharField(max_length=255)
@@ -77,7 +78,7 @@ class Correction(models.Model):
         pass
 
     def __str__(self):
-        return f"Correction {self.correction_id} for Run {self.run.run_id} (Field: {self.field})"
+        return f"Correction {self.correction_id} for Doc {self.doc_id} (Field: {self.field})"
     
 class AuditEvent(models.Model):
     event_id = models.AutoField(primary_key=True)
@@ -92,4 +93,4 @@ class AuditEvent(models.Model):
         pass
 
     def __str__(self):
-        return f"AuditEvent {self.event_id} for Run {self.run.run_id} (Type: {self.event_type})"
+        return f"AuditEvent {self.event_id} for Run {self.run_id} (Type: {self.event_type})"
