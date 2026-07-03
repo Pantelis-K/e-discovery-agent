@@ -8,6 +8,170 @@ Entries follow the format (ordered most recent to least):
 - Rationale:
 - Revisit if:
 
+## 2026-07-03 — Feature-chat decisions: run-level criterion, forced classify tool use, live privilege signals
+
+**Context.** Three decisions were reached in the `classify.py` and `privilege.py`
+feature chats. All are implemented in code; the corresponding spec edits are noted
+per-decision and should be applied in a Mode 1 pass.
+
+---
+
+**Decision 1 — The classification criterion is run-level config, injected by the loop, not supplied per-call by the orchestrator LLM.**
+
+Options considered:
+1. LLM supplies `criteria` on every `classify_relevance` call (as written in §3;
+   dispatch reads `args["criteria"]`) — gives the orchestrator latitude to adapt or
+   narrow the criterion.
+2. The loop injects the run's canonical criterion (`AgentRun.criteria`); the LLM
+   supplies only `doc_id`.
+
+Decision: Option 2. Drop `criteria` from the classifier's LLM-facing tool schema;
+the dispatch injects `AgentRun.criteria` via `run_id`. The Python function signature
+`classify_relevance(doc_id, criteria)` is unchanged — only the caller changes.
+
+Rationale: there is one topic per run (multi-topic is deferred), so the criterion is
+a run constant — config, not a per-call decision. Re-emitting a fixed ~50-word string
+every call invites drift and wastes tokens. The classifier is a separate, versioned
+tool precisely so it can be evaluated independently (eval scores prompt v1 against the
+TREC Topic 204 gold); if the orchestrator could mutate the criterion, v1 would no
+longer be stable and the eval number would stop describing the classifier the cockpit
+actually runs. Adaptation is already delivered through the orchestrator's corrections
+channel (§2) and its retrieval/review/proposal agency — fixing the criterion removes
+only criterion-mutation, which is the one bit of flexibility that is actively harmful.
+Made explicit: the classifier is corrections-blind by design — reviewer corrections
+act at the orchestrator/proposal layer, never inside `classify_relevance`.
+
+Spec edits: §3 `classify_relevance` (add the "who supplies the criterion" note); §2
+eval-mode line (parity is now "same prompt *and* same criterion"); §3 Flow 1
+(`classify_relevance(doc_id)` — loop injects the criterion). `AgentRun.criteria` (§6)
+already exists — no schema change.
+
+Revisit condition: if multi-topic-per-run or sub-criterion refinement leaves the defer
+list, or eval shows the classifier needs topic-specific narrowing that cannot live in
+prompt v1, reconsider per-call criteria.
+
+---
+
+**Decision 2 — `classify_relevance` obtains structured output via a forced tool call, not by parsing JSON from free text.**
+
+Options considered:
+1. Prompt the model to emit JSON, then parse it (with a stricter-prompt retry on
+   malformed output — the mechanism §3's Errors line describes).
+2. Declare a `record_judgment` tool with the RelevanceJudgment schema and force it
+   via `tool_choice`; read the tool_use block's `.input` (already a dict).
+
+Decision: Option 2. Output is defensively coerced (confidence clamped to [0,1],
+`key_passages` forced to a string list) but no fence-stripping or malformed-JSON retry
+path exists.
+
+Rationale: forcing the tool enforces the output shape up front, which is more robust
+than post-hoc parsing and effectively removes the "malformed structured output" failure
+mode. This is the correct reading of §3's intent even though it changes the mechanism.
+
+Spec edit: §3 `classify_relevance` Errors line is stale ("malformed structured output
+(retry with a stricter prompt, then error)") — update to reflect the forced tool call.
+
+Revisit condition: if a future model or a non-Anthropic backend makes forced tool use
+unavailable or unreliable, fall back to JSON-parse-with-retry.
+
+---
+
+**Decision 3 — `check_privilege_signals` computes all signals live at call time; the `privilege_signals` cache table is dropped from scope.**
+
+Options considered:
+1. Build the §6 `privilege_signals` cache model + populate participant signals during
+   ingestion (as §3/§6 envisioned), tool reads cache + computes content/context live.
+2. Compute everything (participant + content + context) live at call time; no cache.
+
+Decision: Option 2, and drop the `privilege_signals` cache table. (Recommended; the
+§3/§6 spec edits removing the cache should be applied in the Mode 1 pass.)
+
+Rationale: the cache model was never built and ingestion never populated it. The tool
+runs in milliseconds on a single document (a substring scan of one body + matching a
+handful of participants against ~10 lawyers), so precomputing participant signals is an
+optimization with no demo-scale payoff and real dependency cost (a model, a migration,
+ingestion coupling). If the cache is ever wanted for scale, `_compute_signals` is
+exactly the logic ingestion would run.
+
+Spec edits: §3 `check_privilege_signals` (note signals are computed live); §6 (remove
+the `privilege_signals` cache table, or mark it explicitly deferred).
+
+Revisit condition: if privilege triage becomes a measured throughput bottleneck at
+larger scale (many thousands of live reviews), reintroduce the cache.
+
+---
+
+# Decisions Pending
+
+_Not yet decided. Recorded here so the open questions and their couplings are not lost
+between sessions. To be resolved in a Mode 1 (Architecture) chat._
+
+**PENDING — General alias → canonical-identity resolution (reopens two cut decisions).**
+
+Decision to be made: whether to build a resolver that maps any participant form (clean
+SMTP, X.500 DN / bare `CN=CODE`, bare display name) to a single canonical identity, and
+in what form — a bounded/lazy resolve-at-read-time approach (resolve only participants
+in reviewed documents) versus a precomputed corpus-wide registry table.
+
+This reopens explicitly cut decisions and must be treated as a reopen, not a fresh idea:
+`extract_entities` (cut revision 1, "the agent rarely needs entity extraction") and the
+corpus-wide `CN → display-name` map (cut revision 3, on the 2-day budget).
+
+New information not weighed at cut time (the justification to reopen):
+- UI consistency — the reviewer's to/from/cc panel should show uniform canonical names,
+  not a mix of emails, X.500 DNs, and bare display names. (Stronger than the rev-1
+  framing of "nicer display.")
+- Corrections-identity (agent-facing, not anticipated by the rev-1 cut) — a correction
+  names a person ("Person A is a lawyer but does not hold privilege"); the agent, reading
+  a document where that person appears as a CN code or email, must resolve alias →
+  identity to apply the guidance. This is a genuine agent-path requirement.
+- It subsumes the lawyer-alias-finding work (see the coupled pending item below).
+
+Feasibility note for the decision: X.500 DNs carry the display name in the prefix
+(`Name </…CN=CODE>`), so a corpus scan pairs CN codes ↔ display names directly — the
+absent corpus directory is not a blocker. The rev-3 cut was a budget call, not an
+infeasibility one.
+
+Depends on:
+- The 2-day build budget — is it worth ~half a day of the two?
+- Whether identity is needed at read-time (agent path, harder) or only at display-time
+  (UI path, cheaper) — the corrections requirement pushes toward read-time.
+- Bounded/lazy vs full precomputed registry.
+
+Affects:
+- `read_document` — does it return a canonical identity alongside raw participants?
+- The corrections mechanism — how corrections reference and resolve people.
+- The UI active-document panel (§4 display).
+- `lawyers.py` — lawyer aliases become a byproduct of the resolver rather than a
+  separate manual grep.
+- The status of the two cut items (`extract_entities`, `CN → display-name` map).
+
+Where decided: Mode 1 / "Chat A". Produces a spec amendment + a full decisions.md entry.
+
+---
+
+**PENDING — Lawyer-list scope: ~10 custodians vs broader roster.**
+
+Decision to be made: keep the ~10 §5 lawyer-custodians, or expand — add prominent
+non-custodian in-house counsel (e.g. Jordan Mintz, GC of Enron Global Finance; Rex
+Rogers, VP & Associate GC), and/or move toward the full legal roster (Enron's legal
+department ran to dozens of attorneys).
+
+Depends on: the identity-resolver decision above. With a resolver + alias map,
+expanding is cheap and low-risk; without it, expansion is manual grep plus false-positive
+risk on common surnames (e.g. "Cook", "Moore", "Davis" all appear as counsel).
+
+Affects: `check_privilege_signals` recall vs precision; the fill/verify work in
+`lawyers.py`. Also carries verification fixes already identified: "Jones" is ambiguous
+(Karen Jones, AGC Portland, vs custodian Tana Jones — confirm which, and whether an
+attorney); Shackleton / Nemec / Heard unverified; Haedicke, Sager, Mann, Sanders,
+Taylor, Derrick (James V.) confirmed. External counsel: Vinson & Elkins (velaw.com),
+Andrews & Kurth (add domain); not Alston & Bird (bankruptcy examiner, not Enron counsel).
+
+Where decided: coupled to Chat A (resolver); finalized in the lawyer-list feature chat
+("Chat C").
+
+
 ### 2026-07-03 — Classification criterion is run-level config, injected by the loop
 
 Context. classify_relevance(doc_id, criteria) (§3) is a separate, versioned LLM
