@@ -105,7 +105,7 @@ Derived from `qrels.t10legallearn` by `count_204.py`:
 ### Usage
 
 - Evaluation pool for `run_eval.py` (classify each document and score against the qrel labels).
-- Priority list for `ingest.py` (the development subset must include every doc-id in this file, otherwise there is nothing to score against).
+- Priority list for `backend\documents\management\commands\ingest_documents.py` (the development subset must include every doc-id in this file, otherwise there is nothing to score against).
 
 ---
 
@@ -138,7 +138,7 @@ data/raw/*.zip/text_NNN/*.txt
 
 ### Usage
 
-- Consumed by `ingest.py` to enumerate what to load.
+- Consumed by `backend\documents\management\commands\ingest_documents.py` to enumerate what to load.
 - Used by `run_eval.py` to resolve judged doc-ids to file paths without re-walking the directory tree.
 - Used by the review-state filter in `search_documents` for existence checks.
 
