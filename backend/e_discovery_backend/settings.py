@@ -1,6 +1,14 @@
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load backend/.env into os.environ (ANTHROPIC_API_KEY, etc.). The Anthropic SDK
+# reads ANTHROPIC_API_KEY from os.environ when the client is first created.
+load_dotenv(BASE_DIR / ".env")
+
+
 SECRET_KEY = "django-insecure-dev-secret-key"
 DEBUG = True
 ALLOWED_HOSTS = ["localhost", "127.0.0.1"]

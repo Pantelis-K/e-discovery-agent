@@ -8,6 +8,42 @@ Entries follow the format (ordered most recent to least):
 - Rationale:
 - Revisit if:
 
+### 2026-07-03 — Classification criterion is run-level config, injected by the loop
+
+Context. classify_relevance(doc_id, criteria) (§3) is a separate, versioned LLM
+component so classification can be evaluated independently (eval scores prompt v1
+against the TREC Topic 204 gold). §3 has the orchestrator supply `criteria` every
+call (dispatch reads args["criteria"]); eval passes the exact TOPIC_204_CRITERIA.
+Raised in the classify.py feature chat: keep LLM-supplied, or inject a fixed
+run-level criterion?
+
+Options.
+1. LLM supplies `criteria` per call (as written in §3) — latitude to adapt/narrow it.
+2. Loop injects the run's canonical criterion; LLM supplies only doc_id.
+
+Decision. Option 2. Drop `criteria` from the classifier's LLM-facing tool schema;
+dispatch injects AgentRun.criteria. classify_relevance's function signature is
+unchanged (still takes criteria) — only the caller changes.
+
+Rationale.
+- One topic per run (multi-topic deferred) → the criterion is a run constant, i.e.
+  config, not a per-call decision. Re-emitting a fixed string every call invites
+  drift and wastes tokens.
+- The classifier is a separate tool so it can be versioned and evaluated (§3). If the
+  orchestrator can mutate the criterion, v1 is no longer stable and the eval number
+  stops describing the classifier the cockpit runs.
+- Adaptation is already delivered via the orchestrator's corrections channel (§2)
+  and its retrieval/review/proposal agency. Fixing removes only criterion-mutation,
+  which is desirable to remove.
+- Made explicit: corrections act at the orchestrator/proposal layer, never inside
+  the classifier (already how §2 routes them). The classifier is corrections-blind
+  by design.
+
+Revisit condition. If multi-topic-per-run or sub-criterion refinement leaves the
+defer list, or eval shows the classifier needs topic-specific narrowing that can't
+live in prompt v1, reconsider per-call criteria.
+
+
 ## 2026-07-02 — Corpus re-confirmed; evaluation methodology fixed; plan recompressed to 2 days
  
 **Context.**

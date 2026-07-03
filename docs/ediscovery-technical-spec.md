@@ -148,8 +148,7 @@ metric. It is not the cockpit loop:
 - **No orchestrator, no Chroma, no human gates.** For each judged Topic-204
   base-email doc-id (from the qrels), read the document text directly (via the
   doc_id→path index built at ingestion; SQLite if already ingested, raw file
-  otherwise), call `classify_relevance` (Haiku, prompt v1 — the same versioned
-  prompt the cockpit uses), and record the proposed decision.
+  otherwise), call `classify_relevance` (Haiku, prompt v1 — the same versioned prompt *and the same run-level criterion* the cockpit uses), and record the proposed decision.
 - **Bypassing the human-commit gate is deliberate and defensible**: eval mode
   measures the classification component; nothing it produces is a "committed"
   decision. Eval writes to `decisions` under an `AgentRun` whose `run_type='eval'`,
@@ -324,6 +323,19 @@ Removed in revision 1 and still cut. Reasoning: in mental simulation of typical 
 
 **Deterministic or LLM.** **LLM-powered.** This is the one tool that internally calls the Anthropic API. The classification prompt is fixed and versioned (call it prompt v1, stored as a constant in `agent/prompts.py`). It takes the document text and the criteria and returns structured output. For the demo, `criteria` is the Topic 204 production request: documents relating to the alteration, destruction, retention, lack of retention, deletion, or shredding of documents or other evidence.
 
+**Who supplies the criterion (decided 2026-07-03).** The criterion is run-level
+configuration, not a per-call decision by the orchestrator. There is one topic per
+run (multi-topic is deferred), so the criterion is constant for the run. The **Python
+function** `classify_relevance(doc_id, criteria)` still takes `criteria`, but the
+**LLM-facing tool schema exposes only `doc_id`** — the loop/dispatch injects the run's
+canonical criterion (`AgentRun.criteria`) when calling the tool. This guarantees the
+cockpit classifier and eval mode score the *identical* criterion (not just the
+identical prompt v1), removes drift from the orchestrator paraphrasing a ~50-word
+string on every call, and saves tokens. Consequence, made explicit: the classifier is
+**corrections-blind by design** — reviewer corrections act at the orchestrator/proposal
+layer (see §2 corrections propagation), never inside `classify_relevance`. See
+`decisions.md` (2026-07-03).
+
 **Why this is a tool rather than something the orchestrator does inline.** Three reasons. First, it lets us version the classification prompt independently of the orchestrator prompt. Second, every classification produces a discrete audit record with structured inputs and outputs, which is central to defensibility. Third, it lets us swap the underlying model — we run the orchestrator on Sonnet (demo) and the classifier on Haiku for cost, without changing the loop.
 
 **Latency.** 2–5 seconds per call.
@@ -350,7 +362,7 @@ Three illustrative flows through a batch to make the tool interactions concrete.
 
 **Flow 1: A clearly relevant, non-privileged document. (Phase 2, per-document review.)**
 
-Starting condition: the batch queue was populated earlier by phase-1 search calls. Orchestrator picks the next document from the queue (a message discussing deleting old trading records). Calls `read_document`. Sees an internal business discussion about clearing out old files, no lawyers on the participant list, no forward markers in the body. Skips `check_privilege_signals`. Calls `classify_relevance(doc_id, criteria)` — returns `{relevant: true, confidence: 0.9, reasoning: "explicit discussion of deleting records..."}`. Proposes decision (relevance: yes, privilege: none). Moves to next document.
+Starting condition: the batch queue was populated earlier by phase-1 search calls. Orchestrator picks the next document from the queue (a message discussing deleting old trading records). Calls `read_document`. Sees an internal business discussion about clearing out old files, no lawyers on the participant list, no forward markers in the body. Skips `check_privilege_signals`. Calls `classify_relevance(doc_id)` (the loop injects the run criterion) — returns `{relevant: true, confidence: 0.9, reasoning: "explicit discussion of deleting records..."}`. Proposes decision (relevance: yes, privilege: none). Moves to next document.
 
 Cost per document: two LLM calls (orchestrator turn + classifier). Fast and cheap. This is the modal flow — most documents look like this.
 
@@ -938,14 +950,16 @@ Both own the loop conceptually; the spec remains the tie-breaker.
 
 ### D. Backend — tools  (files exist; content partial)
 
-- [x] Tool dispatch (`agent/tools/execute_tool`) wired to five tools
-- [~] `search_documents` (`tools/search.py`) — file exists; implement Chroma query + review-state filter (exclude committed + in-queue for `run_id`)
-- [~] `read_document` (`tools/read.py`) — file exists; straight ORM fetch, null-tolerant fields
-- [~] `check_privilege_signals` (`tools/privilege.py`) — file exists; content regexes + participant matching + `participants_unresolved`
-- [~] `classify_relevance` (`tools/classify.py`) — file exists; **blocked on prompt v1** (see below)
-- [~] `request_human_review` / `await_human_resolution` (`tools/human_review.py`) — file exists; implement the DB-polling pause (§2 / §3, Option 1)
-- [ ] `agent/prompts.py` — **empty**: write the orchestrator system prompt + classification prompt v1 (versioned constant)
-- [ ] Lawyer-list fixture (~10 counsel; each with display-name variants + CN code(s) + email(s))
+- [x] read_document (tools/read.py) — null-tolerant ORM fetch; tested
+- [x] classify_relevance (tools/classify.py) — forced record_judgment tool call,
+      Haiku, ~6k truncation, backoff; prompt v1 exists (no longer blocked)
+- [x] check_privilege_signals (tools/privilege.py) — deterministic; participant/
+      content/context signals + content-weighted strength; computed live
+- [x] agent/prompts.py — orchestrator + classification prompt v1 + builders
+- [~] Lawyer-list fixture — 10 §5 custodians + 3-key structure scaffolded;
+      CN codes / name+email verification owed (grep recipe in file)
+- [~] search_documents — NEXT (Chroma query + review-state filter)
+- [~] request_human_review / await_human_resolution — bridges to loop (§C)
 
 ### E. Backend ↔ frontend communication (SSE + actions)  (greenfield — `api/views.py` is just `health`)
 
