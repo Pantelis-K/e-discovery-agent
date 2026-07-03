@@ -11,6 +11,7 @@ class AgentRun(models.Model):
     ]
 
     run_id = models.CharField(max_length=255, primary_key=True)
+    run_type = models.CharField(max_length=255, default="default")  # e.g., "default", "custom"
     topic = models.TextField()
     criteria = models.TextField()
     started_at = models.DateTimeField(auto_now_add=True)
@@ -33,7 +34,10 @@ class AgentStep(models.Model):
     arguments = models.JSONField()
     result = models.JSONField(null=True, blank=True)
     started_at = models.DateTimeField(auto_now_add=True)
-    finished_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    error = models.TextField(null=True, blank=True)
+    tokens_input = models.IntegerField(null=True, blank=True)
+    tokens_output = models.IntegerField(null=True, blank=True)
 
     class Meta:
         pass
