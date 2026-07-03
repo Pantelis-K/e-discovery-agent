@@ -19,6 +19,8 @@ chroma/
 __pycache__/
 *.pyc
 
+!data/raw/README.md
+
 backend/db.sqlite3
 
 
