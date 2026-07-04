@@ -948,6 +948,22 @@ payload           TEXT              -- JSON, event-specific (code has CharField(
 
 Written by a lightweight event writer that other write paths call. Indexed on `run_id`, `target_doc_id`, `event_type`, `timestamp`.
 
+### `human_review_requests`
+
+The persistent handoff row backing the `request_human_review` tool (§2 Django Option 1, §3). Created by `agent.tools.human_review.await_human_resolution` **before** it enters the polling wait; resolved by `POST /runs/<run_id>/resolve` writing `resolution` + `resolved_at`. Persistence-before-block is what makes the pause resumable across a process crash (§2 durability requirement).
+
+```
+request_id        INTEGER PRIMARY KEY AUTOINCREMENT
+run_id            TEXT              -- FK to agent_runs
+doc_id            TEXT              -- FK to documents
+reason            TEXT              -- the agent's stated reason for handing off (§3)
+created_at        TIMESTAMP
+resolved_at       TIMESTAMP         -- NULL while the loop is parked; set by /resolve
+resolution        TEXT              -- JSON: {decision: {...}, reviewer_notes: str}
+```
+
+Read: the tool's polling wait (`refresh_from_db` every 0.5s) and the frontend's active-document handoff panel. Write: the tool on creation; the `/resolve` endpoint on resolution. Not deleted on resolution — the row is the audit trail for the handoff (who resolved, when, what they said). Realised as `agent.models.HumanReviewRequest`; migration `agent/0009_humanreviewrequest.py`.
+
 ### Read/write pattern during one iteration
 
 1. Orchestrator call begins. Read from SQLite: `agent_runs` (current run state), `agent_steps` for the current `run_id` ordered by iteration DESC LIMIT 3 (the transcript window), `corrections` for the current `run_id` ordered by created_at DESC LIMIT 10.
@@ -1118,8 +1134,8 @@ Both own the loop conceptually; the spec remains the tie-breaker.
 - [~] Lawyer-list fixture — 10 §5 custodians + 3-key structure scaffolded;
       docstring updated for structural matching; `cn_codes` still empty (fill via `suggest_lawyer_cn_codes`, §8-A).
 - [ ] `find_participant_documents` (new §3 tool) — SQLite-backed scoped participant lookup. Primitives live in `documents/participants.py` (`token_subset_match`, `MATCHABLE_KINDS`); need the tool wrapper + review-state filter + LLM-facing schema + dispatch entry in `agent/tools/__init__.py`.
-- [~] search_documents — NEXT (Chroma query + review-state filter)
-- [~] request_human_review / await_human_resolution — bridges to loop (§C)
+- [x] search_documents (`agent/tools/search.py`) — ST embedder + Chroma query (lazy singletons), custodian / date_range via Chroma `where`, sender_domain post-filtered against SQL `Document.from_display.domain` (Chroma `sender` metadata is stale until Task 7 re-embed), review-state filter via `Decision` ORM lookup, cosine-distance → similarity score in [0, 1], top-20 dedup. Smoke-tested: filters + review-state exclusion + landing on the Duncan/Andersen and `3.537709` spoliation docs verified.
+- [x] request_human_review / await_human_resolution (`agent/tools/human_review.py` + `agent.models.HumanReviewRequest` + migration `agent/0009_humanreviewrequest.py`) — persistence-before-block via a `HumanReviewRequest` row; 0.5s poll on `refresh_from_db` until `/resolve` fills `resolved_at`; 30 min safety timeout; error dicts on unknown run/doc/timeout. Smoke-tested: threaded resolve, timeout, bad ids.
 
 ### E. Backend ↔ frontend communication (SSE + actions)  (greenfield — `api/views.py` is just `health`)
 
