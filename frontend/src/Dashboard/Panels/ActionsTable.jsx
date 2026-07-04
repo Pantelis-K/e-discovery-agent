@@ -12,6 +12,10 @@ const COLUMNS = [
 
 const SUBJECT_MAX_LENGTH = 30
 const DOC_ID_MAX_LENGTH = 24
+// Must match backend REASON_MAX_LENGTH (api/serializers.py) — the agent's raw
+// reasoning (propose_decision allows up to 8000 chars) has to be capped before
+// it ever reaches a row, or any edit that resubmits it 400s at /corrections/bulk/.
+const REASONING_MAX_LENGTH = 200
 
 function truncate(str, maxLength) {
     if (!str || str.length <= maxLength) return str
@@ -42,7 +46,7 @@ function rowFromDocument(doc) {
 
 const API_BASE = 'http://localhost:8000/api'
 
-export default function ActionsTable({ documents, decisions, onSelectDocument, onRunStarted, sx }) {
+export default function ActionsTable({ documents, decisions, onSelectDocument, onCreateRun, onDocumentCorrected, sx }) {
     const theme = useTheme()
     const { muted } = theme.palette.brand
     const border = theme.palette.divider
@@ -81,7 +85,7 @@ export default function ActionsTable({ documents, decisions, onSelectDocument, o
             if (!decision) return row
             const relevant = !!decision.relevance
             const privileged = decision.privilege === 'privileged'
-            const reasoning = decision.reasoning || ''
+            const reasoning = truncate(decision.reasoning || '', REASONING_MAX_LENGTH)
             if (row.hasDecision && row.relevant === relevant && row.privileged === privileged && row.reasoning === reasoning) {
                 return row
             }
@@ -97,20 +101,60 @@ export default function ActionsTable({ documents, decisions, onSelectDocument, o
         }))
     }, [decisions])
 
+    // Reasoning tracks the *combined* rel+priv verdict, not either field alone: it
+    // only makes sense to show the agent's original reasoning once both fields are
+    // back to what the agent proposed. Any other combination clears it, prompting
+    // the reviewer to write their own justification for the new verdict.
+    const reasoningForToggle = (original, relevant, privileged) => {
+        if (original && relevant === original.relevant && privileged === original.privileged) {
+            return original.reasoning
+        }
+        return ''
+    }
+
     const updateRow = (id, fieldChanges) => {
         setRows((prev) => {
-            const next = prev.map((row) => (row.id === id ? { ...row, ...fieldChanges } : row))
+            const next = prev.map((row) => {
+                if (row.id !== id) return row
+                // Toggle intents are resolved here, against the latest queued row
+                // state, instead of a value computed in ActionsTableRow off props —
+                // reading row.relevant/row.privileged from a render closure is stale
+                // if two clicks land before a re-render happens in between, which
+                // silently breaks "click then click back" round-trips.
+                if (fieldChanges.toggleField === 'relevant') {
+                    const relevant = !row.relevant
+                    return { ...row, relevant, reasoning: reasoningForToggle(row.original, relevant, row.privileged) }
+                }
+                if (fieldChanges.toggleField === 'privileged') {
+                    const privileged = !row.privileged
+                    return { ...row, privileged, reasoning: reasoningForToggle(row.original, row.relevant, privileged) }
+                }
+                return { ...row, ...fieldChanges }
+            })
             const updated = next.find((row) => row.id === id)
-            setChanges((prevChanges) => ({
-                ...prevChanges,
-                [id]: {
-                    doc_id: updated.doc.doc_id,
-                    relevant: updated.relevant,
-                    privileged: updated.privileged,
-                    reasoning: updated.reasoning,
-                    ...(updated.original ? { original: updated.original } : {}),
-                },
-            }))
+            // Round-tripping a field back to the agent's original value is not a
+            // correction — drop the row from the payload instead of resubmitting a no-op.
+            const matchesOriginal = updated.original
+                && updated.relevant === updated.original.relevant
+                && updated.privileged === updated.original.privileged
+                && updated.reasoning === updated.original.reasoning
+            setChanges((prevChanges) => {
+                if (matchesOriginal) {
+                    const { [id]: _dropped, ...rest } = prevChanges
+                    return rest
+                }
+                return {
+                    ...prevChanges,
+                    [id]: {
+                        doc_id: updated.doc.doc_id,
+                        relevant: updated.relevant,
+                        privileged: updated.privileged,
+                        reasoning: updated.reasoning,
+                        ...(updated.original ? { original: updated.original } : {}),
+                    },
+                }
+            })
+            onDocumentCorrected?.(updated.doc.doc_id, !matchesOriginal)
             return next
         })
     }
@@ -118,23 +162,15 @@ export default function ActionsTable({ documents, decisions, onSelectDocument, o
     const beginReview = async () => {
         setStarted(true)
         try {
-            const res = await fetch(`${API_BASE}/runs/`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({}),
-            })
-            if (!res.ok) throw new Error(`Failed to create run: ${res.status}`)
-            const data = await res.json()
-            console.log('created run:', data.run_id)
-            onRunStarted?.(data.run_id)
+            await onCreateRun?.()
             setChanges({})
         } catch (err) {
-            console.error('Bulk approve failed to create run:', err)
+            console.error('Begin review failed to create run:', err)
             return
         }
         setRows((prev) => prev.map((row) => ({ ...row, actioned: true })))
     }
-    
+
     const bulkApprove = async () => {
         setStarted(true)
 
@@ -174,15 +210,7 @@ export default function ActionsTable({ documents, decisions, onSelectDocument, o
         }
 
         try {
-            const res = await fetch(`${API_BASE}/runs/`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({}),
-            })
-            if (!res.ok) throw new Error(`Failed to create run: ${res.status}`)
-            const data = await res.json()
-            console.log('created run:', data.run_id)
-            onRunStarted?.(data.run_id)
+            await onCreateRun?.()
         } catch (err) {
             console.error('Bulk approve failed to create run:', err)
             return
@@ -219,7 +247,7 @@ export default function ActionsTable({ documents, decisions, onSelectDocument, o
                                             onClick={bulkApprove}
                                             sx={{ minWidth: 0, px: 1, textTransform: 'none' }}
                                         >
-                                            Bulk approve
+                                            Submit
                                         </Button>
                                     )}
                                 </TableCell>
@@ -227,7 +255,7 @@ export default function ActionsTable({ documents, decisions, onSelectDocument, o
                         </TableRow>
                     </TableHead>
                     <TableBody>
-                        {!started && (
+                        {!started && rows.length === 0 && (
                             <TableRow>
                                 <TableCell colSpan={COLUMNS.length} align="center" sx={{ py: 4 }}>
                                     <Button variant="contained" onClick={beginReview} sx={{ textTransform: 'none' }}>

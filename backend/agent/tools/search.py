@@ -11,10 +11,10 @@ FLOW
    still return 20 hits). Chunk-level filters go in the Chroma `where` clause:
    `custodian` and `date_range` map cleanly to chunk metadata.
 3. Group chunks by doc_id, keep the best-scoring chunk per doc as the snippet.
-4. Review-state filter (§3): exclude docs already touched in this run — any doc_id
-   with a Decision row for `run_id` (proposed OR committed) is out. This is what
-   stops the agent pulling the same doc into successive batches or into the same
-   batch twice via a broadened query.
+4. Review-state filter (§3): exclude docs already touched in ANY run — any doc_id
+   with a Decision row (proposed OR committed, any run_id) is out. This is what
+   stops the agent re-deciding the same handful of documents across separate
+   "Bulk approve" batches, as well as within a single batch via a broadened query.
 5. Sender-domain filter (post-query): the Chroma `sender` metadata was written by the
    pre-resolver `extract_sender_display` (Task 7 in §5), so it's a display hint, not
    authoritative. Apply the filter against SQLite `Document.from_display[i].domain`
@@ -207,14 +207,16 @@ def search_documents(
     if not best:
         return []
 
-    # Review-state filter (§3): exclude docs with any Decision for this run. Covers
-    # both "already committed by an earlier batch" and "in the current batch's queue
-    # as an uncommitted proposal" — both live in the same table, either committed=0
-    # or committed=1.
+    # Review-state filter (§3): exclude docs with ANY Decision, from this run or any
+    # earlier one. Each "Bulk approve" starts a fresh run_id, so scoping this to the
+    # current run alone let the agent re-surface and re-decide the same top-scoring
+    # handful of documents batch after batch instead of making forward progress
+    # through the corpus. Covers both "already committed by an earlier batch" and
+    # "proposed but not yet committed" — both live in this table, committed=0 or 1.
     if run_id:
         touched = set(
             Decision.objects
-            .filter(run_id_id=run_id, doc_id_id__in=list(best.keys()))
+            .filter(doc_id_id__in=list(best.keys()))
             .values_list("doc_id_id", flat=True)
         )
         for doc_id in list(best.keys()):

@@ -13,7 +13,10 @@ from agent.models import AgentRun, Correction, Decision
 from documents.models import Document
 
 from .serializers import (
+    AgentRunSerializer,
+    CorrectionSerializer,
     CreateRunSerializer,
+    DecisionSerializer,
     DocumentSerializer,
     RowCorrectionSerializer,
     RowDecisionSerializer,
@@ -30,6 +33,26 @@ DEV_ORIGINAL_VALUE = pack_correction_value(relevant=False, privileged=False, rea
 # TODO: replace with the real batch queue (search_documents results for the
 # active run) once the agent loop populates one — see spec §2 "queue population".
 DEV_BATCH_SIZE = 25
+
+
+@api_view(["GET"])
+def list_agent_runs(request):
+    """Full AgentRun history — fetched on dashboard load so the Timeline shows
+    every batch ever run, not just the ones streamed in the current session."""
+    runs = AgentRun.objects.order_by("started_at")
+    return Response(AgentRunSerializer(runs, many=True).data)
+
+
+@api_view(["GET"])
+def list_decisions(request):
+    decisions = Decision.objects.order_by("proposed_at")
+    return Response(DecisionSerializer(decisions, many=True).data)
+
+
+@api_view(["GET"])
+def list_corrections(request):
+    corrections = Correction.objects.order_by("corrected_at")
+    return Response(CorrectionSerializer(corrections, many=True).data)
 
 
 @api_view(["POST"])

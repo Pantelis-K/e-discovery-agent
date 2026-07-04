@@ -22,7 +22,7 @@ The platform handles the full lifecycle of a review, in one place:
 - **Auditing** — every decision, correction, and piece of reasoning permanently logged, attributable to who decided what and why.
 - **Exporting** — a final, defensible list of decisions ready to hand to counsel or the court.
 
-*[Screenshot: full cockpit view — queue, active document, live reasoning stream, and audit timeline side by side]*
+![Completed batch dashboard](assets/dashboard_completed_batch.png)
 
 ---
 
@@ -46,32 +46,29 @@ The platform handles the full lifecycle of a review, in one place:
 ### 1. A persistent, self-populating review queue
 The agent searches the corpus and builds its own queue of candidate documents for the reviewer to work through. That queue lives in the database, not in memory — if the session ends abruptly (browser closed, server restarted, laptop dies mid-demo), nothing is lost. The reviewer picks up exactly where they left off.
 
-*[Screenshot: the review queue / actions table, mid-batch]*
+![Action table](assets/action_table.png)
 
 ### 2. Real-world messy data, made human-readable
 The underlying corpus (see [Data](#the-data) below) is real, unstructured, and genuinely messy: missing senders, unresolvable internal addresses, inconsistent formatting, occasional corrupted files. The platform resolves what it can (structured participant matching, forwarded-message detection) and renders the rest honestly rather than hiding the mess — so a reviewer sees a clean, legible document view even when the source data underneath is anything but.
 
-*[Screenshot: a rendered document view next to a snippet of the raw source file]*
+![Active Document](assets/active_document.png)
 
 ### 3. Transparency: live streaming of every tool the agent uses
 The agent's tool calls — search, read, privilege check, classify — stream to the UI the moment they happen, over a live connection, not a poll. The reviewer watches the agent's reasoning trace build in real time: what it searched for, what it read, what it noticed, and why it proposed the decision it did.
 
-*[Screenshot: the live reasoning / tool-call stream panel]*
+![Reasoning](assets/reasoning.png)
+
 
 ### 4. A fixed, legally-defensible audit log
 Every decision — agent-proposed or human-committed — is written to a permanent audit timeline: who (agent or reviewer) decided what, when, and the stated reason. This is built to support multiple reviewers collaborating on the same matter, with full traceability back to the exact document, decision, and rationale — the format a legal team would actually need to hand to opposing counsel or a court.
 
-*[Screenshot: the audit timeline, showing a mix of agent proposals and human overrides]*
+![Timeline](assets/timeline.png)
 
 ### 5. The reviewer can always change their mind
 No decision is permanent until it's committed, and corrections are a first-class action, not an edge case. When a reviewer overrides the agent, that correction is captured, summarised, and fed back into the agent's context — so the next similar document benefits from the guidance immediately. Reviewers can see exactly what corrections the agent currently "knows" at any point.
 
-*[Screenshot: the corrections view — a reviewer override and its effect on the next document]*
-
 ### 6. See what the agent sees — and overrule it
-The active document panel always shows exactly the document the agent is currently reasoning about, in the same view the reviewer uses to judge it. The reviewer can step in at any point and overwrite the agent's proposed decision directly, with the override immediately reflected in the audit trail.
-
-*[Screenshot: the active document panel with an in-progress AI proposal and the override control]*
+The active document panel always shows exactly the document the agent is able to see. The reviewer can step in at any point and overwrite the agent's proposed decision directly, with the override immediately reflected in the audit trail.
 
 ### 7. Speed, measured
 See [Evaluation](#evaluation-section-g) for the full methodology, but the headline: thousands of documents classified against real legal ground truth in minutes, at a cost of a few dollars, versus the days-to-weeks and thousands of dollars a human review team would spend on the same volume.

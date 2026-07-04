@@ -11,7 +11,7 @@ function App() {
 	const [loggedIn, setLoggedIn] = useState(true) // Set to false for flow in demo
 
 	const demoCases = [
-		{ id: 1, name: 'Harrow & Blackwood v. Meridian Foods', type: 'Contract Dispute', status: 'Active · 1,204 documents', emoji: '📝' },
+		{ id: 1, name: 'Enron Destruction of Documents', type: 'Criminal Investigation', status: 'Active · 455,286 documents', emoji: '📝' },
 		{ id: 2, name: 'In re: Kessler Data Breach', type: 'Cybersecurity Incident', status: 'Active · 3,850 documents', emoji: '🔐' },
 		{ id: 3, name: 'Pennington Vance Patent Litigation', type: 'Patent Infringement', status: 'Active · 962 documents', emoji: '💡' },
 		{ id: 4, name: 'Aldridge & Crowe Employment Claim', type: 'Employment Discrimination', status: 'Under Review · 410 documents', emoji: '👔' },

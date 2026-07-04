@@ -68,6 +68,10 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
+        # WAL mode (agent/apps.py) handles most of this, but a longer busy
+        # timeout means a genuinely concurrent writer retries instead of
+        # immediately raising "database is locked" (default is ~5s).
+        "OPTIONS": {"timeout": 20},
     }
 }
 

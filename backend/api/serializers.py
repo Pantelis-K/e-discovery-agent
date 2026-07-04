@@ -4,7 +4,7 @@ import re
 
 from rest_framework import serializers
 
-from agent.models import Correction
+from agent.models import AgentRun, Correction, Decision
 from agent.prompts import TOPIC_204_CRITERIA
 from documents.models import Document
 
@@ -61,6 +61,39 @@ class CorrectionSerializer(serializers.ModelSerializer):
             "corrected_by",
         ]
         read_only_fields = ["correction_id", "corrected_at"]
+
+
+class AgentRunSerializer(serializers.ModelSerializer):
+    """Full AgentRun rows for the Timeline's audit history — one per batch
+    square, fetched on load alongside decisions/corrections (spec's audit
+    timeline is meant to survive a page refresh, not just the live SSE session)."""
+
+    class Meta:
+        model = AgentRun
+        fields = ["run_id", "run_type", "topic", "criteria", "started_at", "finished_at", "status", "batch_size"]
+
+
+class DecisionSerializer(serializers.ModelSerializer):
+    """Full Decision rows for the Timeline's circle/diamond history."""
+
+    class Meta:
+        model = Decision
+        fields = [
+            "decision_id",
+            "run_id",
+            "doc_id",
+            "proposed_at",
+            "proposed_by",
+            "relevance",
+            "privilege",
+            "issue_tags",
+            "confidence",
+            "reasoning",
+            "committed",
+            "committed_at",
+            "committed_by",
+            "superseder_id",
+        ]
 
 
 class CreateRunSerializer(serializers.Serializer):

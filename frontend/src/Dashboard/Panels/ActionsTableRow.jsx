@@ -27,7 +27,7 @@ export default function ActionsTableRow({ row, onChange, onSelectDocument }) {
                 <IconButton
                     size="small"
                     disabled={pending}
-                    onClick={() => onChange({ relevant: !row.relevant })}
+                    onClick={() => onChange({ toggleField: 'relevant' })}
                     sx={{ maxWidth: 50 }}
                 >
                     {pending
@@ -41,7 +41,7 @@ export default function ActionsTableRow({ row, onChange, onSelectDocument }) {
                 <IconButton
                     size="small"
                     disabled={pending}
-                    onClick={() => onChange({ privileged: !row.privileged })}
+                    onClick={() => onChange({ toggleField: 'privileged' })}
                     sx={{ maxWidth: 50 }}
                 >
                     {pending
@@ -60,6 +60,7 @@ export default function ActionsTableRow({ row, onChange, onSelectDocument }) {
                     value={row.reasoning}
                     onChange={(e) => onChange({ reasoning: e.target.value })}
                     InputProps={{ disableUnderline: true }}
+                    inputProps={{ maxLength: 200 }}
                     sx={{
                         '& .MuiInputBase-root': {
                             px: 1,
