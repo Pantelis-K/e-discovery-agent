@@ -10,38 +10,6 @@ const COLUMNS = [
     { label: '', align: 'center', width: 100 },
 ]
 
-const REASONING_WORDS = [
-    'references', 'custodian', 'communications', 'regarding', 'the', 'disputed',
-    'contract', 'terms', 'and', 'potential', 'breach', 'timeline', 'discussed',
-    'internally', 'between', 'counsel', 'and', 'finance', 'team', 'ahead', 'of',
-    'the', 'quarterly', 'review',
-]
-
-function randomReasoning() {
-    const length = 5 + Math.floor(Math.random() * 4)
-    const words = Array.from({ length }, () => REASONING_WORDS[Math.floor(Math.random() * REASONING_WORDS.length)])
-    return words.join(' ')
-}
-
-function buildRows() {
-    return Array.from({ length: 25 }).map((_, i) => ({
-        id: i + 1,
-        document: `Document_${i + 1}.pdf`,
-        doc: {
-            doc_id: `Document_${i + 1}.pdf`,
-            subject: `Document_${i + 1}.pdf`,
-            body: '(placeholder row — real document batch not loaded yet)',
-            from_display: null,
-            to_display: [],
-            cc_display: [],
-        },
-        relevant: false,
-        privileged: false,
-        reasoning: randomReasoning(),
-        actioned: false,
-    }))
-}
-
 const SUBJECT_MAX_LENGTH = 30
 const DOC_ID_MAX_LENGTH = 24
 
@@ -55,36 +23,79 @@ function documentLabel(doc) {
     return `${truncate(doc.doc_id, DOC_ID_MAX_LENGTH)}`
 }
 
-function buildRowsFromDocuments(documents) {
-    return documents.map((doc, i) => ({
-        id: i + 1,
+function rowFromDocument(doc) {
+    return {
+        id: doc.doc_id,
         document: documentLabel(doc),
         doc,
         relevant: false,
         privileged: false,
         reasoning: '',
         actioned: false,
-    }))
+        // Rel/Priv stay locked until the LLM proposes a decision for this doc.
+        hasDecision: false,
+        // Snapshot of the LLM's proposal, frozen once set — this is the
+        // Correction.original_value a later reviewer edit is measured against.
+        original: null,
+    }
 }
 
 const API_BASE = 'http://localhost:8000/api'
 
-export default function ActionsTable({ documents, onSelectDocument, onRunStarted, sx }) {
+export default function ActionsTable({ documents, decisions, onSelectDocument, onRunStarted, sx }) {
     const theme = useTheme()
     const { muted } = theme.palette.brand
     const border = theme.palette.divider
-    // Mock placeholder rows until the real document batch arrives.
-    const [rows, setRows] = useState(buildRows)
+    // Starts empty — rows are added one at a time as doc_ids stream in from the
+    // active run (see Dashboard's fetchAndAddDocument), not pre-loaded in bulk.
+    const [rows, setRows] = useState([])
+    // Flips the instant the start-of-flow button is clicked — independent of
+    // `rows` so the button disappears immediately, not once the first document
+    // actually arrives over SSE.
+    const [started, setStarted] = useState(false)
     // Keyed by row id so repeated edits to the same row collapse into one
     // entry holding its current state, not a history of every keystroke.
     const [changes, setChanges] = useState({})
 
     useEffect(() => {
-        if (documents && documents.length > 0) {
-            setRows(buildRowsFromDocuments(documents))
-            setChanges({})
+        if (!documents || documents.length === 0) {
+            setRows([])
+            return
         }
+        setRows((prev) => {
+            const existingIds = new Set(prev.map((row) => row.doc.doc_id))
+            const newRows = documents.filter((doc) => !existingIds.has(doc.doc_id)).map(rowFromDocument)
+            return newRows.length > 0 ? [...prev, ...newRows] : prev
+        })
     }, [documents])
+
+    // Reflects the agent's own proposed relevance/privilege/reasoning as
+    // document_decision_proposed events arrive, and unlocks the Rel/Priv
+    // buttons. Not a reviewer edit, so this never touches `changes` (the
+    // corrections payload) — but it does freeze `original`, the baseline a
+    // later reviewer edit is measured against.
+    useEffect(() => {
+        if (!decisions || Object.keys(decisions).length === 0) return
+        setRows((prev) => prev.map((row) => {
+            const decision = decisions[row.doc.doc_id]
+            if (!decision) return row
+            const relevant = !!decision.relevance
+            const privileged = decision.privilege === 'privileged'
+            const reasoning = decision.reasoning || ''
+            if (row.hasDecision && row.relevant === relevant && row.privileged === privileged && row.reasoning === reasoning) {
+                return row
+            }
+            return {
+                ...row,
+                relevant,
+                privileged,
+                reasoning,
+                hasDecision: true,
+                decision_id: decision.decision_id,
+                original: { relevant, privileged, reasoning },
+            }
+        }))
+    }, [decisions])
 
     const updateRow = (id, fieldChanges) => {
         setRows((prev) => {
@@ -97,13 +108,15 @@ export default function ActionsTable({ documents, onSelectDocument, onRunStarted
                     relevant: updated.relevant,
                     privileged: updated.privileged,
                     reasoning: updated.reasoning,
+                    ...(updated.original ? { original: updated.original } : {}),
                 },
             }))
             return next
         })
     }
 
-    const bulkApprove = async () => {
+    const beginReview = async () => {
+        setStarted(true)
         try {
             const res = await fetch(`${API_BASE}/runs/`, {
                 method: 'POST',
@@ -115,6 +128,61 @@ export default function ActionsTable({ documents, onSelectDocument, onRunStarted
             console.log('created run:', data.run_id)
             onRunStarted?.(data.run_id)
             setChanges({})
+        } catch (err) {
+            console.error('Bulk approve failed to create run:', err)
+            return
+        }
+        setRows((prev) => prev.map((row) => ({ ...row, actioned: true })))
+    }
+    
+    const bulkApprove = async () => {
+        setStarted(true)
+
+        const toCommit = rows
+            .filter((row) => row.hasDecision && row.decision_id != null)
+            .map((row) => ({ doc_id: row.doc.doc_id, decision_id: row.decision_id }))
+        if (toCommit.length > 0) {
+            try {
+                const res = await fetch(`${API_BASE}/decisions/bulk_commit/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(toCommit),
+                })
+                if (!res.ok) throw new Error(`Failed to commit decisions: ${res.status}`)
+                const data = await res.json()
+                console.log('committed decisions:', data.committed)
+            } catch (err) {
+                console.error('Bulk approve failed to commit decisions:', err)
+            }
+        }
+
+        const toSubmit = Object.values(changes)
+        if (toSubmit.length > 0) {
+            try {
+                const res = await fetch(`${API_BASE}/corrections/bulk/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(toSubmit),
+                })
+                if (!res.ok) throw new Error(`Failed to submit corrections: ${res.status}`)
+                const data = await res.json()
+                console.log('submitted corrections:', data.created)
+                setChanges({})
+            } catch (err) {
+                console.error('Bulk approve failed to submit corrections:', err)
+            }
+        }
+
+        try {
+            const res = await fetch(`${API_BASE}/runs/`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            })
+            if (!res.ok) throw new Error(`Failed to create run: ${res.status}`)
+            const data = await res.json()
+            console.log('created run:', data.run_id)
+            onRunStarted?.(data.run_id)
         } catch (err) {
             console.error('Bulk approve failed to create run:', err)
             return
@@ -159,6 +227,15 @@ export default function ActionsTable({ documents, onSelectDocument, onRunStarted
                         </TableRow>
                     </TableHead>
                     <TableBody>
+                        {!started && (
+                            <TableRow>
+                                <TableCell colSpan={COLUMNS.length} align="center" sx={{ py: 4 }}>
+                                    <Button variant="contained" onClick={beginReview} sx={{ textTransform: 'none' }}>
+                                        Begin review
+                                    </Button>
+                                </TableCell>
+                            </TableRow>
+                        )}
                         {rows.map((row) => (
                             <ActionsTableRow
                                 key={row.id}
