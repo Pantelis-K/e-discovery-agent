@@ -657,6 +657,7 @@ def run_batch(run_id: str) -> Iterator[dict]:
                         "relevance": reviewer_row.relevance,
                         "privilege": reviewer_row.privilege,
                         "confidence": reviewer_row.confidence,
+                        "reasoning": reviewer_row.reasoning,
                         "proposed_by": "reviewer",
                         "reviewer_notes": override.get("reviewer_notes") or "",
                         "superseded_agent_decision_id": agent_row.decision_id,
@@ -686,6 +687,7 @@ def run_batch(run_id: str) -> Iterator[dict]:
                         "relevance": cleaned.get("relevant"),
                         "privilege": cleaned.get("privilege"),
                         "confidence": cleaned.get("confidence"),
+                        "reasoning": cleaned.get("reasoning"),
                         "proposed_by": "agent",
                     },
                 }
@@ -730,6 +732,7 @@ def run_batch(run_id: str) -> Iterator[dict]:
                         "relevance": reviewer_row.relevance,
                         "privilege": reviewer_row.privilege,
                         "confidence": reviewer_row.confidence,
+                        "reasoning": reviewer_row.reasoning,
                         "proposed_by": "reviewer",
                         "reviewer_notes": cleaned.get("reviewer_notes") or "",
                     },

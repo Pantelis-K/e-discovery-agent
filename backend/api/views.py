@@ -2,19 +2,29 @@ import json
 import uuid
 
 from django.http import StreamingHttpResponse
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view
+from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 
 from agent.loop import run_batch
-from agent.models import AgentRun, Correction
+from agent.models import AgentRun, Correction, Decision
 from documents.models import Document
 
-from .serializers import CreateRunSerializer, DocumentSerializer, RowCorrectionSerializer, pack_correction_value
+from .serializers import (
+    CreateRunSerializer,
+    DocumentSerializer,
+    RowCorrectionSerializer,
+    RowDecisionSerializer,
+    pack_correction_value,
+)
 
 # TODO: remove once POST /runs and real document ingestion exist and every row
 # carries its own run_id/doc_id — see docs/ediscovery-technical-spec.md §8.E.
 DEV_RUN_ID = "dev-run"
+# Fallback original_value for rows corrected before the LLM ever proposed a
+# decision for them (row.original wasn't set — no baseline to record).
 DEV_ORIGINAL_VALUE = pack_correction_value(relevant=False, privileged=False, reasoning="")
 
 # TODO: replace with the real batch queue (search_documents results for the
@@ -61,6 +71,18 @@ def get_document_batch(request):
     return Response(DocumentSerializer(docs, many=True).data)
 
 
+@api_view(["GET"])
+def get_document(request, doc_id):
+    """Fetch one document by id — used by the frontend to resolve a doc_id it
+    learned from a read_document step_started SSE event into the full document
+    for the Actions Table / Active Document panel."""
+    try:
+        doc = Document.objects.get(pk=doc_id)
+    except Document.DoesNotExist:
+        raise NotFound(f"document not found: {doc_id}")
+    return Response(DocumentSerializer(doc).data)
+
+
 @api_view(["POST"])
 def bulk_corrections(request):
     serializer = RowCorrectionSerializer(data=request.data, many=True)
@@ -79,7 +101,7 @@ def bulk_corrections(request):
             Correction(
                 run_id_id=DEV_RUN_ID,
                 doc_id_id=row["doc_id"],
-                original_value=DEV_ORIGINAL_VALUE,
+                original_value=row.get("original") or DEV_ORIGINAL_VALUE,
                 corrected_value=pack_correction_value(row["relevant"], row["privileged"], row["reasoning"]),
                 corrected_by="human_reviewer",
             )
@@ -87,3 +109,22 @@ def bulk_corrections(request):
     Correction.objects.bulk_create(corrections)
 
     return Response({"created": len(corrections)}, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+def bulk_commit_decisions(request):
+    """Reviewer-gated commit: flips Decision.committed 0->1 for each row in the
+    current Actions Table batch. This is the durable half of Bulk approve — the
+    `actioned` checkbox alone is local UI state and doesn't persist anything."""
+    serializer = RowDecisionSerializer(data=request.data, many=True)
+    serializer.is_valid(raise_exception=True)
+    rows = serializer.validated_data
+
+    committed = 0
+    for row in rows:
+        updated = Decision.objects.filter(
+            decision_id=row["decision_id"], doc_id_id=row["doc_id"], committed=False,
+        ).update(committed=True, committed_by="human_reviewer", committed_at=timezone.now())
+        committed += updated
+
+    return Response({"committed": committed}, status=status.HTTP_200_OK)

@@ -76,13 +76,30 @@ class RowCorrectionSerializer(serializers.Serializer):
     """
     One entry in the bulk-approve payload from ActionsTable: the current
     {relevant, privileged, reasoning} state of a single edited row, keyed to
-    the document it belongs to.
+    the document it belongs to. `original`, when present, is the LLM's proposed
+    decision for this doc before the reviewer touched it — already packed to a
+    string by CorrectionValueSerializer, so the view can use it as
+    Correction.original_value directly.
     """
 
     doc_id = serializers.CharField(max_length=255)
     relevant = serializers.BooleanField()
     privileged = serializers.BooleanField()
     reasoning = serializers.CharField(max_length=REASON_MAX_LENGTH, allow_blank=True, trim_whitespace=False)
+    original = CorrectionValueSerializer(required=False)
+
+
+class RowDecisionSerializer(serializers.Serializer):
+    """
+    One entry in the bulk-commit payload from ActionsTable: identifies which
+    proposed Decision a reviewed row corresponds to, so the view can flip
+    Decision.committed 0->1 for it. doc_id isn't needed for the lookup
+    (decision_id is already a unique PK) but is included for cheap validation
+    that the frontend is committing the row it thinks it is.
+    """
+
+    doc_id = serializers.CharField(max_length=255)
+    decision_id = serializers.IntegerField()
 
 
 def _parse_display_json(value, default):

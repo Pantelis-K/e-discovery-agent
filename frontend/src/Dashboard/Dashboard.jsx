@@ -21,14 +21,33 @@ export default function Dashboard({ cases }) {
     const [documents, setDocuments] = useState([])
     const [activeDocument, setActiveDocument] = useState(null)
     const [runEvents, setRunEvents] = useState([])
+    const [decisions, setDecisions] = useState({}) // doc_id -> document_decision_proposed data
     const eventSourceRef = useRef(null)
     const theme = useTheme()
     const { palette } = theme
     const { accent, highlight } = palette.brand
 
+    // Resolves a doc_id the loop just started reading into the full document,
+    // then adds it to the table (dedup by doc_id — a doc may be re-read).
+    const fetchAndAddDocument = (docId) => {
+        fetch(`${API_BASE}/documents/${docId}/`)
+            .then((res) => {
+                if (!res.ok) throw new Error(`Failed to fetch document ${docId}: ${res.status}`)
+                return res.json()
+            })
+            .then((doc) => {
+                setDocuments((prev) => (prev.some((d) => d.doc_id === doc.doc_id) ? prev : [...prev, doc]))
+                setActiveDocument((prev) => prev ?? doc)
+            })
+            .catch((err) => console.error('Failed to fetch streamed document:', err))
+    }
+
     const startRunStream = (runId) => {
         eventSourceRef.current?.close()
         setRunEvents([])
+        setDocuments([])
+        setActiveDocument(null)
+        setDecisions({})
 
         const source = new EventSource(`${API_BASE}/runs/${runId}/stream/`)
         eventSourceRef.current = source
@@ -37,6 +56,12 @@ export default function Dashboard({ cases }) {
             source.addEventListener(type, (e) => {
                 const data = e.data ? JSON.parse(e.data) : {}
                 setRunEvents((prev) => [...prev, { type, data }])
+                if (type === 'step_started' && data.tool === 'read_document' && data.arguments?.doc_id) {
+                    fetchAndAddDocument(data.arguments.doc_id)
+                }
+                if (type === 'document_decision_proposed' && data.doc_id) {
+                    setDecisions((prev) => ({ ...prev, [data.doc_id]: data }))
+                }
                 if (TERMINAL_EVENT_TYPES.has(type)) {
                     source.close()
                 }
@@ -48,29 +73,6 @@ export default function Dashboard({ cases }) {
     }
 
     useEffect(() => () => eventSourceRef.current?.close(), [])
-
-    useEffect(() => {
-        if (!selectedCase) return
-
-        let cancelled = false
-
-        fetch(`${API_BASE}/documents/batch/`)
-            .then((res) => {
-                if (!res.ok) throw new Error(`Failed to fetch document batch: ${res.status}`)
-                return res.json()
-            })
-            .then((data) => {
-                console.log('document batch:', data)
-                if (cancelled) return
-                setDocuments(data)
-                setActiveDocument((prev) => prev ?? data[0] ?? null)
-            })
-            .catch((err) => console.error('Failed to load document batch:', err))
-
-        return () => {
-            cancelled = true
-        }
-    }, [selectedCase])
 
     if (selectedCase) {
         return (
@@ -98,6 +100,7 @@ export default function Dashboard({ cases }) {
                 >
                     <ActionsTable
                         documents={documents}
+                        decisions={decisions}
                         onSelectDocument={setActiveDocument}
                         onRunStarted={startRunStream}
                         sx={{ gridArea: 'tl' }}

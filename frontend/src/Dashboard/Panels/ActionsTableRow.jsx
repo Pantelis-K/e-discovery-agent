@@ -1,11 +1,15 @@
 import React from 'react'
 import { Button, Checkbox, IconButton, TableCell, TableRow, TextField, useTheme } from '@mui/material'
+import AddBoxIcon from '@mui/icons-material/AddBox';
 import CheckBoxIcon from '@mui/icons-material/CheckBox';
 import DisabledByDefaultIcon from '@mui/icons-material/DisabledByDefault';
 
 export default function ActionsTableRow({ row, onChange, onSelectDocument }) {
     const theme = useTheme()
     const border = theme.palette.divider
+    // Rel/Priv start locked and gray until the LLM has actually proposed a
+    // decision for this doc — nothing to toggle before that.
+    const pending = !row.hasDecision
 
     return (
         <TableRow hover>
@@ -22,23 +26,29 @@ export default function ActionsTableRow({ row, onChange, onSelectDocument }) {
             <TableCell align="center" sx={{ maxWidth: 50, px: 0 }}>
                 <IconButton
                     size="small"
+                    disabled={pending}
                     onClick={() => onChange({ relevant: !row.relevant })}
                     sx={{ maxWidth: 50 }}
                 >
-                    {row.relevant
-                        ? <CheckBoxIcon fontSize="small" sx={{ color: 'success.main' }} />
-                        : <DisabledByDefaultIcon fontSize="small" sx={{ color: 'error.main' }} />}
+                    {pending
+                        ? <AddBoxIcon fontSize="small" sx={{ color: 'action.disabled' }} />
+                        : row.relevant
+                            ? <CheckBoxIcon fontSize="small" sx={{ color: 'success.main' }} />
+                            : <DisabledByDefaultIcon fontSize="small" sx={{ color: 'error.main' }} />}
                 </IconButton>
             </TableCell>
             <TableCell align="center" sx={{ maxWidth: 50, px: 0 }}>
                 <IconButton
                     size="small"
+                    disabled={pending}
                     onClick={() => onChange({ privileged: !row.privileged })}
                     sx={{ maxWidth: 50 }}
                 >
-                    {row.privileged
-                        ? <CheckBoxIcon fontSize="small" sx={{ color: 'success.main' }} />
-                        : <DisabledByDefaultIcon fontSize="small" sx={{ color: 'error.main' }} />}
+                    {pending
+                        ? <AddBoxIcon fontSize="small" sx={{ color: 'action.disabled' }} />
+                        : row.privileged
+                            ? <CheckBoxIcon fontSize="small" sx={{ color: 'success.main' }} />
+                            : <DisabledByDefaultIcon fontSize="small" sx={{ color: 'error.main' }} />}
                 </IconButton>
             </TableCell>
             <TableCell>
