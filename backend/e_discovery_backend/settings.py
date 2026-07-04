@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -7,6 +8,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Load backend/.env into os.environ (ANTHROPIC_API_KEY, etc.). The Anthropic SDK
 # reads ANTHROPIC_API_KEY from os.environ when the client is first created.
 load_dotenv(BASE_DIR / ".env")
+
+# Single source of truth for the orchestrator + classifier model (CLAUDE.md dev
+# defaults: Haiku for dev, Sonnet for eval/demo — one env-var swap, no code change).
+AGENT_MODEL = os.environ.get("AGENT_MODEL", "claude-haiku-4-5-20251001")
 
 
 SECRET_KEY = "django-insecure-dev-secret-key"

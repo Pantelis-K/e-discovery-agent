@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Container, Grid, Paper, Typography, Box, useTheme, Stack } from '@mui/material'
 import ActionsTable from './Panels/ActionsTable'
 import ActiveDocument from './Panels/ActiveDocument'
@@ -7,13 +7,47 @@ import Timeline from './Panels/Timeline'
 
 const API_BASE = 'http://localhost:8000/api'
 
+// Mirrors the event types agent.loop.run_batch yields (spec §4).
+const RUN_EVENT_TYPES = [
+    'run_started', 'step_started', 'step_completed', 'document_decision_proposed',
+    'human_review_requested', 'correction_applied', 'batch_complete', 'run_error', 'run_paused',
+]
+
+// Event types that mean the batch is done and the stream can be closed.
+const TERMINAL_EVENT_TYPES = new Set(['batch_complete', 'run_error', 'run_paused'])
+
 export default function Dashboard({ cases }) {
     const [selectedCase, setSelectedCase] = useState(null)
     const [documents, setDocuments] = useState([])
     const [activeDocument, setActiveDocument] = useState(null)
+    const [runEvents, setRunEvents] = useState([])
+    const eventSourceRef = useRef(null)
     const theme = useTheme()
     const { palette } = theme
     const { accent, highlight } = palette.brand
+
+    const startRunStream = (runId) => {
+        eventSourceRef.current?.close()
+        setRunEvents([])
+
+        const source = new EventSource(`${API_BASE}/runs/${runId}/stream/`)
+        eventSourceRef.current = source
+
+        RUN_EVENT_TYPES.forEach((type) => {
+            source.addEventListener(type, (e) => {
+                const data = e.data ? JSON.parse(e.data) : {}
+                setRunEvents((prev) => [...prev, { type, data }])
+                if (TERMINAL_EVENT_TYPES.has(type)) {
+                    source.close()
+                }
+            })
+        })
+        source.onerror = () => {
+            console.error('run stream connection error')
+        }
+    }
+
+    useEffect(() => () => eventSourceRef.current?.close(), [])
 
     useEffect(() => {
         if (!selectedCase) return
@@ -62,9 +96,14 @@ export default function Dashboard({ cases }) {
                         minHeight: 0,
                     }}
                 >
-                    <ActionsTable documents={documents} onSelectDocument={setActiveDocument} sx={{ gridArea: 'tl' }} />
+                    <ActionsTable
+                        documents={documents}
+                        onSelectDocument={setActiveDocument}
+                        onRunStarted={startRunStream}
+                        sx={{ gridArea: 'tl' }}
+                    />
                     <ActiveDocument document={activeDocument} sx={{ gridArea: 'tr' }} />
-                    <Reasoning sx={{ gridArea: 'bl' }} />
+                    <Reasoning events={runEvents} sx={{ gridArea: 'bl' }} />
                     <Timeline sx={{ gridArea: 'br' }} />
                 </Box>
             </Container>

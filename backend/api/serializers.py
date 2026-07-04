@@ -1,13 +1,20 @@
 import json
+import os
 import re
 
 from rest_framework import serializers
 
 from agent.models import Correction
+from agent.prompts import TOPIC_204_CRITERIA
 from documents.models import Document
 
 REASON_MAX_LENGTH = 200
 _VALUE_PATTERN = re.compile(r'^rel: (0|1), priv: (0|1), reason: "(.*)"$', re.DOTALL)
+
+# CLAUDE.md dev defaults: batch size 5 for dev, 25 for demo — one env-var swap,
+# same convention as agent.loop.DEFAULT_MODEL / AGENT_MODEL.
+DEFAULT_TOPIC = "Topic 204: document destruction, retention, and shredding"
+DEFAULT_BATCH_SIZE = int(os.environ.get("AGENT_BATCH_SIZE", 5))
 
 
 def pack_correction_value(relevant, privileged, reasoning):
@@ -54,6 +61,15 @@ class CorrectionSerializer(serializers.ModelSerializer):
             "corrected_by",
         ]
         read_only_fields = ["correction_id", "corrected_at"]
+
+
+class CreateRunSerializer(serializers.Serializer):
+    """POST /runs body. Everything is optional — a bare POST starts a Topic 204
+    dev-sized run, matching CLAUDE.md's dev defaults."""
+
+    topic = serializers.CharField(required=False, default=DEFAULT_TOPIC)
+    criteria = serializers.CharField(required=False, default=TOPIC_204_CRITERIA)
+    batch_size = serializers.IntegerField(required=False, default=DEFAULT_BATCH_SIZE, min_value=1)
 
 
 class RowCorrectionSerializer(serializers.Serializer):

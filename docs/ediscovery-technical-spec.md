@@ -1102,8 +1102,8 @@ Both own the loop conceptually; the spec remains the tie-breaker.
 
 - [x] Django project + apps (`api`, `agent`, `documents`) scaffolded; settings, CORS, DRF wired
 - [x] Core models translated from §6 (Document, AgentRun, AgentStep, Decision, Correction, AuditEvent) + migrations applied
-- [ ] `AgentStep`: add `error`, `tokens_input`, `tokens_output` (required by §2 token budget + error-budget stop)
-- [ ] `Correction`: add `summary` field (drives the corrections viewer — never-cut feature)
+- [x] `AgentStep`: add `error`, `tokens_input`, `tokens_output` (required by §2 token budget + error-budget stop)
+- [x] `Correction`: add `summary` field (drives the corrections viewer — never-cut feature)
 - [ ] `AuditEvent.payload`: widen `CharField(255)` → `JSONField`/`TextField`
 - [ ] `AgentRun`: add `run_type` (`live`/`eval`)
 - [ ] Eval-mode `Document` upsert path (satisfy `Decision.doc_id` FK without full ingestion)
@@ -1152,13 +1152,13 @@ Both own the loop conceptually; the spec remains the tie-breaker.
 
 - [x] React + Vite + MUI scaffold; backend health check
 - [ ] `EventSource` SSE consumer + `useReducer` event folding
-- [ ] Queue panel (live status; "(no subject)"/"(unknown sender)" fallbacks)
-- [ ] Active document panel (proposed decision, confidence, reasoning expandable, Approve/Correct)
+- [x] Queue panel (live status; "(no subject)"/"(unknown sender)" fallbacks)
+- [x] Active document panel (proposed decision, confidence, reasoning expandable, Approve/Correct)
 - [ ] Agent reasoning stream (live tool calls + args; pause-auto-scroll)
 - [ ] Batch approval gate (batch summary → Approve all / Review individually / Pause)
 - [ ] Corrections viewer (literal injected `summary` text, timestamps, doc links)
 - [ ] Audit timeline (plain filterable list — query bar/permalinks cut)
-- [ ] Graceful rendering around missing subject/sender everywhere
+- [x] Graceful rendering around missing subject/sender everywhere
 - [ ] Single-decision reversal — **stretch** (first to cut; timeline read-only if dropped)
 
 ### G. Evaluation  (Person A — `run_eval.py` is empty)
