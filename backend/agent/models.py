@@ -29,10 +29,10 @@ class AgentRun(models.Model):
 class AgentStep(models.Model):
     step_id = models.AutoField(primary_key=True)
     run_id = models.ForeignKey(AgentRun, on_delete=models.CASCADE, related_name="steps")
-    iteration = models.IntegerField()
-    tool = models.CharField(max_length=255)
-    arguments = models.JSONField()
-    result = models.JSONField(null=True, blank=True)
+    iteration = models.IntegerField() # for if something crashes
+    tool = models.CharField(max_length=255) # which tool was called
+    arguments = models.JSONField() # info passed into tool call
+    result = models.JSONField(null=True, blank=True) # result of tool call, if any
     started_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     error = models.TextField(null=True, blank=True)

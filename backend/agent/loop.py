@@ -436,7 +436,7 @@ def run_batch(run_id: str) -> Iterator[dict]:
             yield {"type": "run_error", "data": {"error_type": "llm_unexpected", "message": str(e)}}
             return
 
-        messages.append({"role": "assistant", "content": response.content})
+# ^^ fill in system_prompt for now
 
         tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
         if not tool_use_blocks:

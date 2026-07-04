@@ -1,15 +1,24 @@
 import React from 'react'
-import { Checkbox, IconButton, TableCell, TableRow, TextField, useTheme } from '@mui/material'
+import { Button, Checkbox, IconButton, TableCell, TableRow, TextField, useTheme } from '@mui/material'
 import CheckBoxIcon from '@mui/icons-material/CheckBox';
 import DisabledByDefaultIcon from '@mui/icons-material/DisabledByDefault';
 
-export default function ActionsTableRow({ row, onChange }) {
+export default function ActionsTableRow({ row, onChange, onSelectDocument }) {
     const theme = useTheme()
     const border = theme.palette.divider
 
     return (
         <TableRow hover>
-            <TableCell sx={{ fontSize: 13 }}>{row.document}</TableCell>
+            <TableCell sx={{ fontSize: 13, px: 0 }}>
+                <Button
+                    size="small"
+                    variant="text"
+                    onClick={() => onSelectDocument?.(row.doc)}
+                    sx={{ textTransform: 'none', fontSize: 13, px: 1, py: 0.5, minWidth: 0, width: '100%', justifyContent: 'flex-start' }}
+                >
+                    {row.document}
+                </Button>
+            </TableCell>
             <TableCell align="center" sx={{ maxWidth: 50, px: 0 }}>
                 <IconButton
                     size="small"

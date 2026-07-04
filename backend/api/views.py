@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from agent.models import AgentRun, Correction
 from documents.models import Document
 
-from .serializers import RowCorrectionSerializer, pack_correction_value
+from .serializers import DocumentSerializer, RowCorrectionSerializer, pack_correction_value
 
 # TODO: remove once POST /runs and real document ingestion exist and every row
 # carries its own run_id/doc_id — see docs/ediscovery-technical-spec.md §8.E.
@@ -16,6 +16,17 @@ DEV_ORIGINAL_VALUE = pack_correction_value(relevant=False, privileged=False, rea
 @api_view(["GET"])
 def health(request):
     return Response({"status": "ok", "service": "e-discovery-backend"})
+
+
+# TODO: replace with the real batch queue (search_documents results for the
+# active run) once the agent loop populates one — see spec §2 "queue population".
+DEV_BATCH_SIZE = 25
+
+
+@api_view(["GET"])
+def get_document_batch(request):
+    docs = Document.objects.order_by("?")[:DEV_BATCH_SIZE]
+    return Response(DocumentSerializer(docs, many=True).data)
 
 
 @api_view(["POST"])
