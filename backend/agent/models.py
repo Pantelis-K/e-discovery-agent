@@ -11,6 +11,7 @@ class AgentRun(models.Model):
     ]
 
     run_id = models.CharField(max_length=255, primary_key=True)
+    run_type = models.CharField(max_length=255, default="default")  # e.g., "default", "custom"
     topic = models.TextField()
     criteria = models.TextField()
     started_at = models.DateTimeField(auto_now_add=True)
@@ -33,7 +34,10 @@ class AgentStep(models.Model):
     arguments = models.JSONField()
     result = models.JSONField(null=True, blank=True)
     started_at = models.DateTimeField(auto_now_add=True)
-    finished_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    error = models.TextField(null=True, blank=True)
+    tokens_input = models.IntegerField(null=True, blank=True)
+    tokens_output = models.IntegerField(null=True, blank=True)
 
     class Meta:
         pass
@@ -65,12 +69,10 @@ class Decision(models.Model):
     
 class Correction(models.Model):
     correction_id = models.AutoField(primary_key=True)
-    run_id = models.ForeignKey(AgentRun, on_delete=models.CASCADE, related_name="corrections")
+    run_id = models.ForeignKey(AgentRun, on_delete=models.CASCADE, related_name="corrections") # could be used for confidence or smth
     doc_id = models.ForeignKey(Document, on_delete=models.CASCADE, related_name="corrections")
-    field = models.CharField(max_length=255)  # e.g., "relevance", "privilege", "issue_tags"
-    original_value = models.CharField(max_length=255)
-    corrected_value = models.CharField(max_length=255)
-    rationale = models.TextField()  # explanation of why the correction was made
+    original_value = models.CharField(max_length=255) # rel: 1, priv: 0, reason: "200chars" where 200chars enforced by ai summary
+    corrected_value = models.CharField(max_length=255) # rel: 1, priv: 0, reason: "200chars" where 200chars enforced by ai summary
     corrected_at = models.DateTimeField(auto_now_add=True)
     corrected_by = models.CharField(max_length=255)  # e.g., "human_reviewer"
 
@@ -78,7 +80,7 @@ class Correction(models.Model):
         pass
 
     def __str__(self):
-        return f"Correction {self.correction_id} for Doc {self.doc_id} (Field: {self.field})"
+        return f"Correction {self.correction_id} for Doc {self.doc_id}"
     
 class AuditEvent(models.Model):
     event_id = models.AutoField(primary_key=True)
