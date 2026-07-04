@@ -34,15 +34,16 @@ import random
 import time
 
 import anthropic
+from django.conf import settings
 
 from agent.prompts import CLASSIFY_SYSTEM_PROMPT, build_classification_user_message
 from agent.tools.read import read_document
 
 logger = logging.getLogger(__name__)
 
-# Haiku always (§2). One-line change if a different Haiku build is preferred;
-# kept consistent with the model string already used in loop.py.
-CLASSIFIER_MODEL = "claude-3-5-haiku-latest"
+# Haiku always (§2). Single source of truth lives in settings.AGENT_MODEL — the
+# same setting agent.loop.DEFAULT_MODEL points at.
+CLASSIFIER_MODEL = settings.AGENT_MODEL
 MAX_OUTPUT_TOKENS = 1024
 MAX_BODY_CHARS = 6000            # §2 eval truncation
 

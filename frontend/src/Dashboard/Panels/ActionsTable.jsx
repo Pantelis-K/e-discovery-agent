@@ -69,7 +69,7 @@ function buildRowsFromDocuments(documents) {
 
 const API_BASE = 'http://localhost:8000/api'
 
-export default function ActionsTable({ documents, onSelectDocument, sx }) {
+export default function ActionsTable({ documents, onSelectDocument, onRunStarted, sx }) {
     const theme = useTheme()
     const { muted } = theme.palette.brand
     const border = theme.palette.divider
@@ -104,20 +104,20 @@ export default function ActionsTable({ documents, onSelectDocument, sx }) {
     }
 
     const bulkApprove = async () => {
-        const payload = Object.values(changes)
-        if (payload.length > 0) {
-            try {
-                const res = await fetch(`${API_BASE}/corrections/bulk/`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload),
-                })
-                if (!res.ok) throw new Error(`Bulk approve failed: ${res.status}`)
-                setChanges({})
-            } catch (err) {
-                console.error('Bulk approve failed to submit corrections:', err)
-                return
-            }
+        try {
+            const res = await fetch(`${API_BASE}/runs/`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            })
+            if (!res.ok) throw new Error(`Failed to create run: ${res.status}`)
+            const data = await res.json()
+            console.log('created run:', data.run_id)
+            onRunStarted?.(data.run_id)
+            setChanges({})
+        } catch (err) {
+            console.error('Bulk approve failed to create run:', err)
+            return
         }
         setRows((prev) => prev.map((row) => ({ ...row, actioned: true })))
     }

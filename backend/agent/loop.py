@@ -42,13 +42,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import random
 import time
 from collections import defaultdict
 from typing import Iterator
 
 import anthropic
+from django.conf import settings
 from django.utils import timezone
 
 from agent.models import AgentRun, AgentStep, Correction, Decision
@@ -65,8 +65,9 @@ logger = logging.getLogger(__name__)
 # Config                                                                       #
 # --------------------------------------------------------------------------- #
 
-# Haiku dev, Sonnet demo — one env-var swap (§8 stack picks).
-DEFAULT_MODEL = os.environ.get("AGENT_MODEL", "claude-3-5-haiku-latest")
+# Haiku dev, Sonnet demo — one env-var swap (§8 stack picks). Single source of
+# truth lives in settings.AGENT_MODEL; classify.py points at the same setting.
+DEFAULT_MODEL = settings.AGENT_MODEL
 MAX_OUTPUT_TOKENS = 2048
 
 # §2 stop conditions
@@ -435,7 +436,11 @@ def run_batch(run_id: str) -> Iterator[dict]:
         recent_corrections=corrections,
     )
 
-    messages: list[dict] = []
+    # Anthropic's API requires at least one message; the system prompt alone
+    # doesn't satisfy that, so seed a plain user turn to kick off iteration 1.
+    messages: list[dict] = [
+        {"role": "user", "content": "Begin the review. Populate the queue, then review documents."}
+    ]
     proposed_this_batch = 0
     tool_error_counts: dict[str, int] = defaultdict(int)
     malformed_streak = 0
@@ -448,6 +453,7 @@ def run_batch(run_id: str) -> Iterator[dict]:
                 max_tokens=MAX_OUTPUT_TOKENS,
                 system=system_prompt,
                 tools=TOOLS,
+                tool_choice={"type": "auto", "disable_parallel_tool_use": True},
                 messages=_truncate(messages),
             )
         except anthropic.APIError as e:
@@ -475,12 +481,30 @@ def run_batch(run_id: str) -> Iterator[dict]:
                     },
                 }
                 return
-            # Nudge the LLM and try again. Plain text user message is allowed.
+            # Record the assistant's (tool-less) turn first so roles keep alternating
+            # and the model sees its own prior text on retry. Safe here — there are
+            # no tool_use blocks in this turn to leave unpaired.
+            if response.content:
+                messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": "Please call a tool."})
             continue
         malformed_streak = 0
 
+        # Record the assistant turn before its tool_result, keeping text blocks but
+        # only the FIRST tool_use. We answer exactly one tool per iteration, and every
+        # tool_use in a recorded assistant turn MUST get a matching tool_result next,
+        # or the API 400s. disable_parallel_tool_use should already guarantee one
+        # tool_use; this filter guarantees transcript validity regardless.
         block = tool_use_blocks[0]  # spec: at most one tool per iteration
+        assistant_content = []
+        kept_tool_use = False
+        for content_block in response.content:
+            if content_block.type == "tool_use":
+                if kept_tool_use:
+                    continue
+                kept_tool_use = True
+            assistant_content.append(content_block)
+        messages.append({"role": "assistant", "content": assistant_content})
 
         # ---- LLM voluntary finish_batch ---- #
         if block.name == "finish_batch":
