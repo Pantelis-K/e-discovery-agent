@@ -55,12 +55,12 @@ export default function ActionsTableRow({ row, onChange }) {
                     }}
                 />
             </TableCell>
-            <TableCell align="center" sx={{ maxWidth: 50, px: 0 }}>
+            <TableCell align="center" sx={{ maxWidth: 100, px: 0 }}>
                 <Checkbox
                     size="small"
                     checked={row.actioned}
                     onChange={(e) => onChange({ actioned: e.target.checked })}
-                    sx={{ maxWidth: 50 }}
+                    sx={{ maxWidth: 100 }}
                 />
             </TableCell>
         </TableRow>
