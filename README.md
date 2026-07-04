@@ -73,7 +73,6 @@ The active document panel always shows exactly the document the agent is able to
 ### 7. Speed, measured
 See [Evaluation](#evaluation-section-g) for the full methodology, but the headline: thousands of documents classified against real legal ground truth in minutes, at a cost of a few dollars, versus the days-to-weeks and thousands of dollars a human review team would spend on the same volume.
 
-*[Screenshot / chart: throughput and cost comparison, agent vs. manual baseline]*
 
 ---
 
