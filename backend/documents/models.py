@@ -17,7 +17,15 @@ class Document(models.Model):
     custodian = models.CharField(max_length=255, null=True, blank=True)
     attachment_refs = models.TextField(null=True, blank=True)
     raw_headers = models.TextField(null=True, blank=True)
-
+    # Resolved participant display (spec §5, added Task-B / identity resolution).
+    # Derived at ingest from the raw From/To/Cc via documents.participants; stored as
+    # JSON. Each display value is a structured unit {raw, display, kind, cn_code,
+    # email, domain}. from_display holds ONE unit (or null); to_/cc_display hold a
+    # JSON list of units. Raw from_addr/to_addrs/cc_addrs are kept alongside for audit.
+    from_display = models.TextField(null=True, blank=True)   # JSON object or null
+    to_display = models.TextField(null=True, blank=True)     # JSON array of units
+    cc_display = models.TextField(null=True, blank=True)     # JSON array of units
+    
     class Meta:
         pass
 

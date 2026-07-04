@@ -11,6 +11,7 @@ Read spec §5 before editing. Any change to parsing rules should be reflected th
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 from email.utils import parsedate_to_datetime
@@ -209,6 +210,12 @@ def chunk_text(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP_
 
 # ------------------------- Composed pipeline -------------------------
 
+def _json_or_none(value) -> str | None:
+    """Serialise a list/dict to a JSON string for a TEXT column (spec §6:
+    to_addrs/cc_addrs/attachment_refs/raw_headers are `TEXT -- JSON`). None stays None.
+    read.py reads these back with json.loads, so they must be JSON, not Python repr."""
+    return None if value in (None, [], {}) else json.dumps(value, ensure_ascii=False)
+
 
 def parse_document_file(path_bytes: bytes, doc_id: str, path_str: str) -> dict | None:
     """
@@ -216,8 +223,12 @@ def parse_document_file(path_bytes: bytes, doc_id: str, path_str: str) -> dict |
     model, or None if the file should be skipped. Skip reasons returned as
     {'__skip__': <reason>} rather than exceptions.
 
-    Returned dict uses Python types (list, dict, datetime) — no JSON encoding.
-    Django's JSONField / DateTimeField handles serialisation.
+    JSON-shaped fields (to_addrs, cc_addrs, attachment_refs, raw_headers) are returned
+    as JSON STRINGS, because the model stores them in TextField columns (spec §6:
+    `TEXT -- JSON`) and read.py parses them back with json.loads. `date` stays a
+    datetime (the real DateTimeField serialises it). Assigning a raw Python list/dict
+    to a TextField str()-reprs it (single quotes) and breaks json.loads downstream —
+    that was the prior bug.
     """
     if is_binary_corrupt(path_bytes):
         return {"__skip__": "binary_corrupt"}
@@ -241,12 +252,12 @@ def parse_document_file(path_bytes: bytes, doc_id: str, path_str: str) -> dict |
         "thread_id":       doc_id,  # placeholder — find_thread cut per rev-3
         "subject":         headers.get("Subject") or None,
         "from_addr":       headers.get("From") or None,
-        "to_addrs":        split_participants(to_raw) if to_raw else None,
-        "cc_addrs":        split_participants(cc_raw) if cc_raw else None,
+        "to_addrs":        _json_or_none(split_participants(to_raw)) if to_raw else None,
+        "cc_addrs":        _json_or_none(split_participants(cc_raw)) if cc_raw else None,
         "bcc_addrs":       None,  # never populated (Bcc absent from corpus)
         "date":            parse_date(headers.get("Date") or ""),
         "body":            body,
         "custodian":       custodian_from_path(path_str),
-        "attachment_refs": attachment_refs if attachment_refs else None,
-        "raw_headers":     headers,
+        "attachment_refs": _json_or_none(attachment_refs),
+        "raw_headers":     _json_or_none(headers),
     }

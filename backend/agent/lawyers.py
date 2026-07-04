@@ -8,13 +8,22 @@ directory in the corpus and NO @enron.com address for an X.500-addressed person 
 CN code resolves only to a display name. So each lawyer carries ALL THREE keys and
 participant matching (privilege.py) succeeds on whichever form appears.
 
+STATUS: 
+MATCHING (privilege.py, structural — not substring). Each resolved participant unit is
+matched against these keys: exact `cn_codes` / `emails` (high confidence) or a
+token-subset match of the unit display against `display_variants` (lower confidence,
+surname-collision-prone). So partial data still matches on SMTP + display name; filling
+`cn_codes` improves X.500 coverage and confidence.
+
 STATUS: STARTER FIXTURE — complete against the corpus before privilege matching is
 trustworthy. Names/roles are the §5 lawyer-custodians. `emails` follow Enron's
 firstname.lastname@enron.com convention and MUST be verified. `display_variants` are
 the predictable "Last, First" / "First Last" forms. `cn_codes` are EMPTY — they are
-per-corpus identifiers that cannot be guessed; fill them with the grep recipe below.
-Matching is case-insensitive substring on any key, so partial data still matches on
-SMTP + display name; filling cn_codes only improves X.500 coverage. ~2 hours (§5).
+per-corpus identifiers that cannot be guessed. Fill them by running
+`python manage.py suggest_lawyer_cn_codes` (mines them from the resolved participants;
+prints candidates + hit counts for you to eyeball for collisions and paste in). The
+raw grep recipe below still works as a manual fallback. ~2 hours (§5).
+
 """
 
 # Each entry: emails / display_variants / cn_codes are all matched (any hit = match).

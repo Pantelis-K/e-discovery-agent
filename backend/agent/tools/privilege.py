@@ -7,10 +7,13 @@ flag can be explained to an auditor as a structured signal set ("Shackleton in F
 interprets these signals into a proposed decision; the signals themselves are rules.
 
 Computes ALL signals live at call time from the document (participants + body):
-  * participant signals - match From/To/Cc against the lawyer list (agent/lawyers.py)
-    on any of three keys: SMTP email, X.500 CN code, or display name (§5). Absent
-    From/To -> participants_unresolved (do NOT read "no lawyer found" as "not
-    privileged" - §3).
+  * participant signals - match the RESOLVED participant units (read_document's
+    from_display/to_display/cc_display, produced by documents.participants) against the
+    lawyer list STRUCTURALLY: exact cn_code, exact email (high confidence), or a
+    token-subset display match (lower confidence - surname collisions). Each match is
+    recorded as {name, via, matched} for audit. Unresolved unless BOTH From and To
+    carry a matchable participant - do NOT read "no lawyer found" as "not privileged"
+    (§3/§5).
   * content signals - case-insensitive phrase scan of the body (confidentiality /
     privilege markers; legal-advice and Topic-204 preservation/hold language, §3).
   * context signals - is_forwarded from inline body markers (the reliable forward
@@ -32,6 +35,7 @@ Errors: doc not found -> {"error": ...}. Missing participant metadata is NOT an 
 from __future__ import annotations
 
 from agent.lawyers import LAWYERS, EXTERNAL_COUNSEL_DOMAINS
+from documents.participants import MATCHABLE_KINDS, token_subset_match
 
 # --- content phrase banks (lowercase; matched as substrings of the body) ----------
 
@@ -68,30 +72,58 @@ FORWARD_MARKERS = [
 ]
 
 
-def _match_participants(participants: list[str]) -> tuple[list[str], list[str]]:
-    """(matched lawyer names, matched external-counsel domains) for raw participant
-    strings. Case-insensitive substring on any lawyer key handles all three §5 forms."""
-    names: list[str] = []
+def _match_lawyer(unit: dict) -> dict | None:
+    """Best lawyer match for one resolved participant unit, or None.
+
+    Matches STRUCTURALLY on the resolved unit's fields (not a substring scan of raw
+    text — that was what the mis-splits broke). Precedence, high confidence first:
+      1. cn_code  — exact, case-insensitive (an Exchange CN code is a person key)
+      2. email    — exact, case-insensitive
+      3. display  — token-subset against a lawyer display-variant (lower confidence:
+                    surname collisions exist, e.g. Tana Jones vs Karen Jones)
+    Exact (cn/email) wins over display across ALL lawyers, so the two passes are
+    separated. Returns {name, via, matched} for an auditable signal ("Shackleton via
+    cn_code=Sshackl in From") rather than an opaque name."""
+    cn = (unit.get("cn_code") or "").lower()
+    email = (unit.get("email") or "").lower()
+    display = unit.get("display") or ""
+
+    for lawyer in LAWYERS:
+        if cn and any(cn == c.lower() for c in lawyer.get("cn_codes", [])):
+            return {"name": lawyer["name"], "via": "cn_code", "matched": unit["cn_code"]}
+        if email and any(email == e.lower() for e in lawyer.get("emails", [])):
+            return {"name": lawyer["name"], "via": "email", "matched": unit["email"]}
+    for lawyer in LAWYERS:
+        if display and any(token_subset_match(v, display)
+                           for v in lawyer.get("display_variants", [])):
+            return {"name": lawyer["name"], "via": "display", "matched": display}
+    return None
+
+
+def _match_field(units: list[dict]) -> tuple[list[dict], list[str]]:
+    """(lawyer match dicts, external-counsel domains) for one field's resolved units.
+    Deduplicates lawyers by name within the field, keeping the first (highest-confidence)
+    match seen."""
+    matches: list[dict] = []
+    seen: set[str] = set()
     domains: list[str] = []
-    for raw in participants:
-        if not raw:
-            continue
-        low = raw.lower()
-        for lawyer in LAWYERS:
-            keys = (
-                lawyer.get("emails", [])
-                + lawyer.get("display_variants", [])
-                + lawyer.get("cn_codes", [])
-            )
-            if any(k and k.lower() in low for k in keys):
-                names.append(lawyer["name"])
-                break
-        if "@" in low:
-            domain = low.rsplit("@", 1)[-1].strip(" >\"'")
+    for unit in units:
+        m = _match_lawyer(unit)
+        if m and m["name"] not in seen:
+            matches.append(m)
+            seen.add(m["name"])
+        dom = (unit.get("domain") or "").lower()
+        if dom:
             for d in EXTERNAL_COUNSEL_DOMAINS:
-                if d.lower() in domain:
+                if d.lower() in dom:
                     domains.append(d)
-    return sorted(set(names)), sorted(set(domains))
+    return matches, sorted(set(domains))
+
+
+def _field_usable(units: list[dict]) -> bool:
+    """True if the field carries at least one matchable participant (present AND not
+    all x500_blank/other). Drives participants_unresolved."""
+    return any(u.get("kind") in MATCHABLE_KINDS for u in units)
 
 
 def _scan_content(body: str) -> tuple[bool, bool, list[str]]:
@@ -106,50 +138,63 @@ def _detect_forwarded(body: str) -> bool:
     return any(m in low for m in FORWARD_MARKERS)
 
 
-def _strength(lawyer_present: bool, external_present: bool,
-              has_conf: bool, has_legal: bool) -> str:
+def _strength(high_conf_lawyer: bool, display_only_lawyer: bool,
+              external_present: bool, has_conf: bool, has_legal: bool) -> str:
     """Content-weighted aggregate (§3) - a hint, not a decision.
+
+    A TRUSTWORTHY participant signal is a high-confidence lawyer match (cn_code/email)
+    or an external-counsel domain. A display-ONLY lawyer match is collision-prone
+    (common surnames), so on its own it counts only as a weak signal.
     none    : nothing
-    weak    : a single content signal, no participant signal (content-only, §3)
-    moderate: participant alone; participant + one content; or two content signals
-              with no participant (content-weighted for §5 participant gaps)
-    strong  : participant + two content signals, or lawyer AND external counsel with
-              content (multiple signals, §3)
+    weak    : one content signal, or a display-only lawyer match, with no trustworthy participant
+    moderate: two content signals; or a trustworthy participant (alone or + one content)
+    strong  : trustworthy participant + two content signals, or lawyer AND external + content
     """
-    participant = lawyer_present or external_present
+    participant = high_conf_lawyer or external_present
     content = int(has_conf) + int(has_legal)
-    if content == 0 and not participant:
-        return "none"
     if not participant:
-        return "weak" if content == 1 else "moderate"
+        if content >= 2:
+            return "moderate"
+        if content == 1 or display_only_lawyer:
+            return "weak"
+        return "none"
     if content == 0:
         return "moderate"
-    if content >= 2 or (lawyer_present and external_present):
+    if content >= 2 or (high_conf_lawyer and external_present):
         return "strong"
     return "moderate"
 
 
-def _compute_signals(from_addr, to_list, cc_list, body) -> dict:
-    """Pure signal computation - no DB, unit-testable in isolation."""
-    to_list = to_list or []
-    cc_list = cc_list or []
-    from_participants = [from_addr] if from_addr else []
+def _compute_signals(from_units, to_units, cc_units, body) -> dict:
+    """Pure signal computation over RESOLVED participant units - no DB, unit-testable.
+    from_units/to_units/cc_units are lists of the structured units produced by
+    documents.participants (from read_document's *_display fields)."""
+    from_units = from_units or []
+    to_units = to_units or []
+    cc_units = cc_units or []
 
-    from_names, from_domains = _match_participants(from_participants)
-    to_names, to_domains = _match_participants(to_list)
-    cc_names, cc_domains = _match_participants(cc_list)
+    from_matches, from_domains = _match_field(from_units)
+    to_matches, to_domains = _match_field(to_units)
+    cc_matches, cc_domains = _match_field(cc_units)
     external_domains = sorted(set(from_domains + to_domains + cc_domains))
 
     has_conf, has_legal, matched = _scan_content(body)
-    lawyer_present = bool(from_names or to_names or cc_names)
-    # §3: flag true when we lack the participant metadata to judge - i.e. no From/To.
-    participants_unresolved = not (bool(from_addr) or bool(to_list))
+
+    all_matches = from_matches + to_matches + cc_matches
+    high_conf_lawyer = any(m["via"] in ("cn_code", "email") for m in all_matches)
+    display_only_lawyer = any(m["via"] == "display" for m in all_matches)
+
+    # §3 (refined): unresolved unless BOTH From and To carry at least one matchable
+    # participant. A field that is missing, or present but all x500_blank/other, is not
+    # usable. Conservative by design - "no lawyer found" must not read as "not privileged".
+    participants_unresolved = not (_field_usable(from_units) and _field_usable(to_units))
 
     return {
         "participant_signals": {
-            "known_lawyers_in_from": from_names,
-            "known_lawyers_in_to": to_names,
-            "known_lawyers_in_cc": cc_names,
+            # Each entry: {name, via: cn_code|email|display, matched: <value>} (§3).
+            "known_lawyers_in_from": from_matches,
+            "known_lawyers_in_to": to_matches,
+            "known_lawyers_in_cc": cc_matches,
             "external_counsel_domains": external_domains,
             "participants_unresolved": participants_unresolved,
         },
@@ -163,7 +208,8 @@ def _compute_signals(from_addr, to_list, cc_list, body) -> dict:
             "thread_confidence": "low",   # threading unreliable; find_thread cut (§3)
         },
         "overall_signal_strength": _strength(
-            lawyer_present, bool(external_domains), has_conf, has_legal
+            high_conf_lawyer, display_only_lawyer, bool(external_domains),
+            has_conf, has_legal,
         ),
     }
 
@@ -175,6 +221,12 @@ def check_privilege_signals(doc_id: str) -> dict:
     if "error" in doc:
         return {"error": f"privilege: cannot read document - {doc['error']}"}
 
+    # Match on the RESOLVED participant units (from_display is one unit or None;
+    # to_/cc_display are lists), not the raw strings (spec §5 identity resolution).
+    from_unit = doc.get("from_display")
     return _compute_signals(
-        doc.get("from"), doc.get("to"), doc.get("cc"), doc.get("body")
+        [from_unit] if from_unit else [],
+        doc.get("to_display") or [],
+        doc.get("cc_display") or [],
+        doc.get("body"),
     )

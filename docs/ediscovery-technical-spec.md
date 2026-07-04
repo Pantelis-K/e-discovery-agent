@@ -241,13 +241,15 @@ The general design principle: tools should have crisp responsibilities and be in
 
 ### `read_document`
 
-**Signature.** `read_document(doc_id: str) -> Document` where Document is `{doc_id, subject, from, to, cc, date, body, custodian, attachments}`.
+**Signature.** `read_document(doc_id: str) -> Document` where Document is `{doc_id, subject, from, to, cc, from_display, to_display, cc_display, date, body, custodian, attachments}`.
 
 **Data source.** SQLite `documents` table (via the `Document` model).
 
 **Deterministic or LLM.** Deterministic. Straight ORM fetch.
 
 **Field-availability reality.** `subject`, `from`, `to`, and `cc` are frequently absent in this corpus and will be returned as null / empty when the source message did not carry them (see section 5 for measured prevalence — `From:` present ~83%, `To:` ~66%, and much lower for some custodians). `date` is always present. The agent's prompt must be told these can be missing so it does not over-interpret a blank `from` as anonymity. `attachments` is always an empty list in the demo build — attachment documents are out of scope (defer list), and we ingest base emails only; the field exists for shape compatibility only.
+
+**Resolved participant units (`*_display`).** Alongside the raw `from`/`to`/`cc` strings, `read_document` returns the deterministically resolved participants: `from_display` is one unit object (or null), `to_display` and `cc_display` are lists. Each unit is `{raw, display, kind, cn_code, email, domain}` where `kind` is one of `x500_named`, `smtp_prefixed`, `smtp_internal`, `smtp_external`, `bare_name`, `x500_blank`, `other`, and `display` is a reviewer-safe label (`"(Unresolved)"` for `x500_blank`/`other`). Resolution runs deterministically at ingest via `documents/participants.py` (see §5); the raw strings are kept alongside for audit. See §5 for how the resolver handles the three coexisting address forms and its known limitations.
 
 **Latency.** Milliseconds.
 
@@ -280,11 +282,11 @@ Removed in revision 1 and still cut. Reasoning: in mental simulation of typical 
 ```
 {
   participant_signals: {
-    known_lawyers_in_from: [str],
-    known_lawyers_in_to: [str],
-    known_lawyers_in_cc: [str],
+    known_lawyers_in_from: [{name, via, matched}],   // via ∈ {cn_code, email, display}
+    known_lawyers_in_to:   [{name, via, matched}],
+    known_lawyers_in_cc:   [{name, via, matched}],
     external_counsel_domains: [str],
-    participants_unresolved: bool     // true when From/To were missing or unmatchable
+    participants_unresolved: bool     // true unless BOTH From AND To carry ≥1 matchable participant
   },
   content_signals: {
     has_confidentiality_marker: bool,
@@ -299,25 +301,100 @@ Removed in revision 1 and still cut. Reasoning: in mental simulation of typical 
 }
 ```
 
+Each lawyer match is a structured object (`{name, via, matched}`) rather than a bare name string so the audit trail records **which key hit** — an auditable "Shackleton via cn_code=Sshackl in From" beats an opaque "['Shackleton']".
+
 **Data source.** All signals are computed **live at call time** — there is no precomputed
-`privilege_signals` cache (dropped; see §6). SQLite (participants, body), plus a hardcoded
+`privilege_signals` cache (dropped; see §6). SQLite (via `read_document`'s resolved
+participant units `from_display`/`to_display`/`cc_display`, plus body), plus a hardcoded
 list of known Enron in-house counsel and external counsel domains. Content regex over the
 body for phrases like "privileged and confidential," "attorney work product," "seeking legal
 advice," and — relevant to Topic 204 — "litigation hold," "preservation notice," "do not delete."
 
 **Deterministic or LLM.** Deterministic. Explicitly not LLM-based. Rationale: this tool exists precisely so the privilege triage logic is auditable and defensible. If a judge later asks "why did you flag this as privileged," the answer is a structured signal set, not "the LLM said so." The LLM interprets the signals into a decision, but the signals themselves are produced by transparent rules.
 
-**Address-matching reality (verified on disk — this materially changes participant matching).** Internal Enron participants do **not** appear as clean `name@enron.com` addresses. They appear in three inconsistent forms across the corpus: (1) clean SMTP address, (2) Exchange X.500 distinguished name `Name </O=ENRON/OU=…/CN=RECIPIENTS/CN=CODE>`, and (3) bare display name with no address at all. Critically, **no `@enron.com` address exists anywhere in the corpus for an X.500-addressed person** — the `CN=CODE` fragment resolves (via a corpus-wide scan) to a *display name* only, never an email. Consequences for this tool:
+**Structural matching (revised from substring, decision 2026-07-04).** Each resolved
+participant unit is matched against `LAWYERS` **structurally**, on the unit's fields, not
+by scanning the raw text:
 
-- The lawyer list must carry, per lawyer, **all three keys**: display-name variants, `CN=` code(s), and any clean email addresses. Matching succeeds on any one form.
-- Because `From:`/`To:` are frequently missing entirely, participant matching has **partial coverage by design**. When participants are absent or unresolvable, set `participants_unresolved: true` and lean on content signals. Do not silently treat "no lawyer found" as "no privilege" — the flag makes the uncertainty explicit to the LLM and the auditor.
-- The corpus-wide `CN → display-name` map was **cut in revision 3**; the lawyer list hand-carries CN codes for the ~10 known counsel instead.
+1. `cn_code` exact (case-insensitive) — an Exchange CN code is a person key → **high confidence**, `via: "cn_code"`.
+2. `email` exact (case-insensitive) → **high confidence**, `via: "email"`.
+3. `display` `token_subset_match` against a lawyer variant (every variant token appears in the observed display) → **low confidence**, `via: "display"`. Surname-collision-prone (e.g. Tana Jones vs Karen Jones), so this alone is a weak signal.
+
+Exact wins over display across ALL lawyers (the two passes are separated). Matches are
+deduplicated within a field. External-counsel domains come from each unit's `domain` field
+matched against `EXTERNAL_COUNSEL_DOMAINS`.
+
+**`participants_unresolved` semantics (refined 2026-07-04).** True unless BOTH `From` **and**
+`To` carry at least one participant with `kind ∈ {x500_named, smtp_prefixed, smtp_internal,
+smtp_external, bare_name}`. A field that is missing, or present but composed entirely of
+`x500_blank`/`other` units (undisclosed-recipients, suppression labels), is not usable. This
+fires more often than the previous "true only when both missing" rule (~40% of docs are
+now flagged unresolved) — chosen deliberately for the conservative privilege stance: "no
+lawyer found" must not read as "not privileged." Positive lawyer findings still coexist
+with the flag; the flag says "the participant sample was thin," not "no signal."
+
+**Address-matching reality (from the participant-format survey — `docs/participant-format-survey.md`).**
+Internal Enron participants appear in three coexisting forms across the corpus: (1) clean
+SMTP `name@enron.com`, (2) Exchange X.500 DN `Name </O=ENRON/OU=…/CN=RECIPIENTS/CN=CODE>`,
+(3) bare display name with no address. `smtp_prefixed` is the single largest category
+(40.0% of all participant units, so SMTP-based matching gets substantial coverage).
+Critically, **no `@enron.com` address exists anywhere in the corpus for an X.500-addressed
+person** — a `CN=CODE` fragment resolves to a *display name* only, never an email.
+Consequences:
+
+- The lawyer list must carry, per lawyer, **all three keys**: `display_variants`, `cn_codes`, and `emails`. Matching succeeds on any one form. `cn_codes` are the piece that cannot be guessed; `manage.py suggest_lawyer_cn_codes` mines candidates from the resolved units (§5) and prints them for eyeballing.
+- The corpus-wide `CN → display-name` **registry stays cut** (revision 3 decision reinforced 2026-07-04). Rationale strengthens: the survey found exactly **one** `x500_blank` unit in the whole corpus (i.e. one case where a DN has no accompanying display prefix to pair to), and even that one is a splitter artifact from a lowercase-`</o=` value — so a corpus-wide CN registry now has effectively zero remaining use case. The 10-lawyer hand-carry via `suggest_lawyer_cn_codes` covers the demand.
 
 **Latency.** Milliseconds.
 
 **Errors.** None expected; degrades to empty participant signals with `participants_unresolved: true` on missing metadata.
 
-**The `overall_signal_strength` field** is a simple rules-based aggregate (any lawyer + any content signal = moderate; multiple signals = strong; content signals only = weak; etc.). It's a hint to the LLM, not a decision. Given the participant-coverage gaps, content signals are weighted more heavily than the revision-1 design assumed.
+**The `overall_signal_strength` field** is a rules-based aggregate (a hint to the LLM, not a decision) with weighting refined 2026-07-04 to reflect confidence tiers:
+
+- **`none`**: no content signals and no participant signal.
+- **`weak`**: one content signal alone; OR a display-only lawyer match alone (collision-prone).
+- **`moderate`**: two content signals with no participant; OR a high-confidence participant (cn_code / email / external-counsel domain) alone or with one content signal.
+- **`strong`**: a high-confidence participant plus two content signals; OR both an in-house lawyer AND an external-counsel domain plus content.
+
+The refinement matters because a display-only lawyer match, on its own, is not enough evidence to bump strength — surname collisions in a corpus this size are real.
+
+### `find_participant_documents` — NEW (added 2026-07-04)
+
+**Purpose.** A scoped participant-name lookup: given a person name, return documents where that name appears in `From:`, `To:`, or `Cc:`. Structured lookup over SQLite — deliberately separate from the semantic `search_documents` (Chroma) tool. Used when the reviewer or the agent has a specific person to trace (e.g. "show me everything from Sara Shackleton in the queue") or when a correction names an individual and the agent needs to find similar-participant cases without hallucinating that a semantic body-text query will surface them.
+
+**Signature.** `find_participant_documents(name: str, fields: list[str] = ["from", "to", "cc"], limit: int = 50) -> list[ParticipantHit]` where each hit is `{doc_id, matched_in: [str], matched_unit: {kind, display, cn_code, email}, subject, date, custodian}`.
+
+- `name` — a person's name in any natural form (`"Sara Shackleton"`, `"Shackleton, Sara"`, `"Shackleton"`).
+- `fields` — subset of `{"from", "to", "cc"}`. Default all three.
+- `limit` — cap on returned hits (default 50). Ranked by date DESC.
+- `matched_in` — the fields in which this doc's units matched (a doc where the name is in both From and Cc gets `["from", "cc"]`).
+- `matched_unit` — the first matching unit's structured representation, so the caller knows *which* form ("via CN=Sshackl" vs "via display 'Shackleton, Sara M.'") produced the hit — this is the audit trail.
+
+**Data source.** SQLite `documents_document`, matching against the resolved `from_display`/`to_display`/`cc_display` unit JSON columns (populated by ingest / the corrective backfill; see §5). No Chroma, no LLM.
+
+**Match rule.** `name_tokens(name)` must be a subset of `name_tokens(unit.display)` — the same `token_subset_match` used by `check_privilege_signals` for lawyer-display matching. Order-independent (`"Sara Shackleton"` and `"Shackleton, Sara"` both work as queries), tolerant of middle initials in the target (`"Shackleton, Sara M."` matches both), and directional to avoid surname-collision false positives (bare `"Shackleton"` as a query matches everything with that surname; bare `"Shackleton"` as a target does NOT match a query with a first name). The query side can also be an email prefix or a CN code — if `"@"` is present it matches against `unit.email` (case-insensitive exact), and if the query looks like a CN code (`re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name)` when no space present) it also matches against `unit.cn_code`. Display-token match is the default and covers the natural case; email/cn short-circuits are for advanced queries.
+
+**Deliberately NO canonical person IDs.** The corpus has no directory table; the same person appears as X.500 DN with CN code, as SMTP address, as bare display name, and often with typo/space variants. Building a canonical identity registry would require corpus-wide clustering with no ground truth to score against, on a hackathon budget. Instead: match by string tokens, return the matching UNIT so the caller sees which form hit, and let the reviewer adjudicate whether two hits are the same person. This is the honest position — the identity resolver failure would be an own-goal on the "conservative, auditable" story.
+
+**Deterministic or LLM.** Deterministic. Straight SQLite query + Python filter.
+
+**Latency.** ~O(n) over `Document.objects.filter(<field>__icontains=name_token)` narrowed by SQLite, then a Python-side `token_subset_match` refinement over ~1–2K candidate rows. Sub-second on the full corpus for a typical name query. If it proves slow after full ingest, add a normalised participant-token table as an index (deferred).
+
+**Review-state filtering.** Same discipline as `search_documents`: exclude doc_ids that already have a committed decision for the current run, and doc_ids already in the current batch's queue. Both IDs are passed from the loop context (not by the LLM).
+
+**Errors.** Empty result → empty list (valid, LLM should try a related name or move on). Malformed `fields` (unknown field name) → error object; LLM course-corrects.
+
+**Why this is separate from `search_documents`.** Structured vs semantic. `search_documents` runs a Chroma similarity query on chunk embeddings — it finds documents whose *body content* is semantically similar to a query string. `find_participant_documents` runs a SQLite lookup on structured participant metadata — it finds documents whose *sender/recipient set* contains a specific person. They answer different questions. Conflating them (e.g. "search for Shackleton" over Chroma) makes retrieval unreliable because the body may not mention the person at all when they are only the sender; conversely, semantic body queries should not be blurred with participant filters through Chroma's `where` clause because the participant metadata in Chroma is a display-hint only (§5, `extract_sender_display`), not the authoritative resolved unit.
+
+**Relationship to the cut `extract_entities` tool.** Adjacent, but not the same. `extract_entities` (cut revision 1) was framed as "the LLM asks 'give me people mentioned in this document'" — an LLM-in-the-loop entity extractor over free text. `find_participant_documents` is the inverse and is deterministic: given a person, return docs. The rev-1 cut argued the LLM rarely needs entity extraction. The 2026-07-04 addition argues that a person-scoped retrieval capability *is* needed once corrections start naming individuals — but that need is served by structured lookup, not by extracting entities from body text.
+
+**Example calls.**
+
+- `find_participant_documents("Sara Shackleton")` → docs where Shackleton appears as sender or recipient in any of the three forms (SMTP via `sara.shackleton@enron.com`, X.500 via `CN=Sshackl` once populated, or display "Shackleton, Sara M."), ranked by date.
+- `find_participant_documents("Shackleton, Sara", fields=["cc"], limit=20)` → last 20 docs where she's Cc'd.
+- `find_participant_documents("Sshackl")` → CN-code short-circuit; docs where any unit has `cn_code == "Sshackl"` (case-insensitive).
+
+**Status.** Not yet implemented (`documents/participants.py` provides the matcher primitives; the tool wrapper + API surfacing is TODO — §8 checklist).
 
 ### `classify_relevance`
 
@@ -412,7 +489,7 @@ Four regions, laid out as a grid. Sketch this as a 2×2 with one region wider th
 
 **Top left: Queue panel.** The prioritised list of documents the agent will work through in the current batch. Each row shows: doc ID, subject (or "(no subject)" when absent), sender (or "(unknown sender)" when absent), date, current status (pending, in-progress, awaiting review, decided). The document the agent is currently on is highlighted. Status changes update live via SSE.
 
-**Top right (wide): Active document panel.** The document the agent is currently working on, or the one the reviewer has clicked to inspect. Shows subject, participants, date, body. Below the body, the agent's proposed decision (relevance, privilege, issue tags) with confidence scores and a "reasoning" expandable that shows the classification tool's rationale. Below that, action buttons: Approve, Correct. Because participant and subject fields are often missing in this corpus, the panel must render gracefully with those blank rather than looking broken.
+**Top right (wide): Active document panel.** The document the agent is currently working on, or the one the reviewer has clicked to inspect. Shows subject, participants, date, body. Below the body, the agent's proposed decision (relevance, privilege, issue tags) with confidence scores and a "reasoning" expandable that shows the classification tool's rationale. Below that, action buttons: Approve, Correct. Because participant and subject fields are often missing in this corpus, the panel must render gracefully with those blank rather than looking broken. **Participants render the resolved `*_display[i].display` label** (canonical name from `documents.participants`) with `"(Unresolved)"` shown greyed-out for `x500_blank`/`other` units; raw X.500 DNs and IMCEAEX proxy addresses are never surfaced to the reviewer. The Queue panel similarly uses `from_display.display` for the sender column, falling back to `"(unknown sender)"` when the field is null.
 
 **Bottom left: Agent reasoning stream.** A live log of what the agent is doing right now. Each entry is one iteration: what tool it called, with what arguments, and (once the result comes back) a one-line summary of the result. Auto-scrolls, but with a "pause auto-scroll" toggle so the reviewer can inspect history. This is the "visibility" mechanism made tangible.
 
@@ -499,13 +576,29 @@ Verified prevalence (sampled; see `DATA_REFERENCE.md` for the per-custodian brea
 - **Frequently missing: `From:` (~83%), `To:` (~66%), `Cc:` (~11%)** — and dramatically worse for some custodians (e.g. `To:` present on 1/60 sampled `bailey-s` files; `From:`/`To:` on 12/60 `skilling-j`). `Bcc:` was never observed. No `Message-ID:`/`In-Reply-To:`/`References:` ever.
 - **Practical rule:** the parser must never assume `From:`/`To:`/`Subject:` exist. Missing participants are stored as null and surfaced honestly through the tools and UI. This is why `check_privilege_signals` carries a `participants_unresolved` flag and leans on content signals (section 3).
 
-### Address formats and the CN mapping
+### Address formats, the splitter, and resolved units
 
-Participants appear in three coexisting forms: clean SMTP (`name@enron.com` or external), Exchange X.500 DN (`Name </O=ENRON/OU=…/CN=RECIPIENTS/CN=CODE>`), and bare display name with no address. There is **no directory/alias file in the corpus**, and **no `@enron.com` address exists anywhere for an X.500-addressed person** — the `CN=CODE` fragment resolves only to a *display name*.
+Participants appear in three coexisting forms: clean SMTP (`name@enron.com` or external), Exchange X.500 DN (`Name </O=ENRON/OU=…/CN=RECIPIENTS/CN=CODE>`), and bare display name with no address. There is **no directory/alias file in the corpus**, and **no `@enron.com` address exists anywhere for an X.500-addressed person** — the `CN=CODE` fragment resolves only to a *display name*. A full survey of the on-disk distribution lives at `docs/participant-format-survey.md`; the load-bearing counts are: `smtp_prefixed` 40.0%, `bare_name` 34.4%, `x500_named` 14.4%, `smtp_external` 7.7%, `smtp_internal` 3.4%, `x500_blank` **1 unit corpus-wide**, `other` 0.03%. `Bcc:` is empty in 455,286 / 455,286 rows (parser hard-codes null).
 
-Parsing notes for the loader:
-- Multi-recipient `To:`/`Cc:` lines are comma-separated, but display names *also* contain commas (`Last, First M.`). Split on the `>,` boundary between `Name </X.500>` units, not on every comma, or names get misattributed to the wrong CN code.
-- The corpus-wide `CN → display-name` map (optional enhancement in earlier revisions) was **cut in revision 3.** The lawyer list hand-carries CN codes for the ~10 known counsel instead.
+**Bracket-anchored splitter (`documents/participants.py::resolve_field`, revised 2026-07-04).**
+The initial `documents/parsing.py::split_participants` chose a whole-field delimiter based
+on whether `</O=` was in the value: `>,` split if it was, plain comma split if not. The
+survey proved this mis-split ~1,580 documents at minimum, and re-splitting the whole
+corpus via the new resolver corrected **21,174 To: rows and 2,425 Cc: rows** (14× and 2×
+the survey estimate — the survey undercounted the plain-comma trap). The three defects
+and their fixes:
+
+1. **Case-sensitive marker missing lowercase `</o=`.** 980 documents used a lowercase `</o=` DN marker only, which the uppercase `X500_MARKER = "</O="` check missed → the field fell through to plain-comma split → 2,313 spurious "Lastname" + "Firstname \<DN\>" split pairs across 973 docs (including the sole `x500_blank` unit corpus-wide). **Fix:** the new splitter is case-insensitive on brackets and doesn't depend on the marker's case at all.
+2. **`Last, First <addr>` comma trap.** With no X.500 marker in the field, the plain comma splitter also broke "Sogomonian, Aram \<Aram.Sogomonian@…\>" into two units. 1,352 such pairs across 609 docs. **Fix:** the new splitter anchors on `<...>` (which never contains a real separator) and treats the whole non-email run before the bracket as the display name, so `Last, First <addr>` stays intact.
+3. **Bare-comma addresses merged beside an X.500 unit.** Once a value contained any `</O=`, every `>,` became a split point — including after ordinary bracketed SMTP addresses — but plain comma-separated bare addresses stayed merged into one stored unit. **Fix:** the new algorithm walks the value once, peels off complete email tokens off the front of each pre-bracket prefix, and only the trailing non-email run becomes the bracket's display.
+
+The new algorithm has a deliberate, documented **over-grouping bias**: a bracketless `"Last, First"` (either the entire field or one recipient among comma-separated plain names, with no `<...>` anywhere to anchor on) over-splits into `"Last"` + `"First"` bare-name units. `token_subset_match` requires every query token in the target, so a lawyer variant `"Sanders, Richard"` will NOT match a bare `"Sanders"` target — the surname alone is not "safe degradation" for privilege matching. Impact is bounded because Enron in-house counsel almost always appear as X.500 or SMTP (bracketed) rather than bare comma-name, but it should be understood as a real limitation, not a free lunch. Under the current lawyer list, the over-split loses recall on bare-name lawyer signals only.
+
+**Single-participant fields use `resolve_unit`, not `resolve_field`.** `From:` always carries one participant, so the ingest / backfill code calls `resolve_unit(headers.get("From"))` directly. This preserves bare `"Last, First"` sender names as one bare_name unit rather than over-splitting into surname + given-name. The initial backfill missed this and corrupted 6,165 `from_display` values (all `from_addr` bare-comma names — `Stark, Cindy`, `Kaminski, Vince J`, etc. — collapsed to surname-only). Corrected 2026-07-04; re-run of the backfill idempotently repaired all 6,165 rows. The `resolve_field` docstring warns callers.
+
+**Resolved units are stored on `Document`.** Alongside the raw `from_addr` / `to_addrs` / `cc_addrs` (kept for audit), each row carries `from_display` (one JSON unit object, or null) and `to_display` / `cc_display` (JSON arrays of unit objects). Unit shape: `{raw, display, kind, cn_code, email, domain}` — see §3 `read_document`. `raw` is a canonicalised single-unit substring (whitespace normalised), not byte-for-byte verbatim; the pristine `raw_headers` column preserves that.
+
+**CN → display-name registry stays cut** (revision 3 decision reinforced 2026-07-04). The survey's one-unit `x500_blank` count corpus-wide means a corpus-wide registry has effectively no remaining justification: there are no `Name </O=…>` entries whose display-name prefix is missing and needs recovery from a lookup table. The 10-lawyer hand-carry, seeded by `manage.py suggest_lawyer_cn_codes` (mines candidates from resolved x500_named units — read-only, prints for eyeballing), covers all demand. `extract_entities` also stays cut; the new `find_participant_documents` tool (§3) covers the "find people" use case in a way that doesn't require entity extraction.
 
 ### Encoding and corrupted files
 
@@ -524,11 +617,30 @@ Ingestion is now two Django management commands (replacing the standalone `inges
 2. **Skips attachment files** (any `.N.txt`) — base emails only.
 3. **Skips binary-corrupted files** (NUL-heavy / undecodable), logging each.
 4. Parses each file: split header block from body at the first blank line; extract available header fields (`Date`, `X-SDOC`, `X-ZLID` always; `Subject`/`From`/`To`/`Cc` when present); strip the ZL boilerplate footer; capture the body; note any `Attachment:` line for metadata (the attachment itself is not ingested).
-5. Normalises participants across the three address forms; stores raw forms plus a canonical key where resolvable. Custodian is taken from the directory name.
-6. Inserts into the `documents` table (see section 6), with `doc_id` = filename stem.
-7. 7. (removed) Privilege signals are **not** precomputed at ingestion. `check_privilege_signals`
+5. Normalises participants across the three address forms via `documents.participants` — call `resolve_unit(headers.get("From"))` for the single-participant From field, and `resolve_field(headers.get("To"))` / `resolve_field(headers.get("Cc"))` for the multi-participant fields. Store raw `from_addr` / `to_addrs` / `cc_addrs` alongside the structured display units `from_display` (one unit) / `to_display` / `cc_display` (arrays). Custodian is taken from the directory name.
+6. Inserts into the `documents` table (see section 6), with `doc_id` = filename stem. TEXT columns that carry structured data (`to_addrs`, `cc_addrs`, `attachment_refs`, `raw_headers`, `*_display`) are `json.dumps`-encoded — see the serialisation note below.
+7. (removed) Privilege signals are **not** precomputed at ingestion. `check_privilege_signals`
    computes all signals live at call time (the `privilege_signals` cache was dropped —
    see §3 / §6 / decisions.md 2026-07-03). Ingestion touches no privilege state.
+
+**Serialisation of TEXT-JSON columns.** `to_addrs`, `cc_addrs`, `attachment_refs`,
+`raw_headers`, and the three `*_display` columns are declared `TextField` in the model but
+carry JSON payloads (§6: "TEXT — JSON"). `parse_document_file` `json.dumps`-encodes these
+fields before handing them to Django — assigning a raw Python list/dict to a `TextField`
+str()-reprs it (single quotes) and breaks `json.loads` downstream. The regression was
+introduced when the docstring claimed "JSONField handles serialisation" while the model
+was actually `TextField`; corrected 2026-07-04. Migrating these columns to `JSONField`
+proper would be cleaner but is a deferred cleanup — no functional gap while `json.dumps`
+is applied consistently.
+
+**Task 7 gap (fresh-clone correctness, tracked in §8-A).** `parse_document_file` still
+calls the OLD `split_participants` (not `resolve_field`) and does NOT populate the
+`*_display` columns at ingest; `embed_documents` still calls the old
+`extract_sender_display` for Chroma's `sender` metadata. Fresh clones therefore leave
+`*_display` NULL until the corrective `backfill_participants` command runs; the current
+production DB is fully backfilled and correct. Task 7 unifies the splitter and populates
+`*_display` at ingest time so a fresh clone reaches the correct end state without needing
+the backfill.
 
 `embed_documents` logic:
 
@@ -537,7 +649,7 @@ Ingestion is now two Django management commands (replacing the standalone `inges
 
 Both commands must be idempotent (safe to re-run) and print a summary: documents ingested, files skipped (attachment / corrupt), chunks embedded, parse failures.
 
-**Verified on a dev subset (standalone run; the Django commands must reproduce these):** 41,112 base emails ingested, 27 binary-corrupt skipped, 0 decode/read errors; 12,926 zero-body docs (31.44%) — confirmed as legitimate header-only records (calendar items, Notes housekeeping entries with epoch-0 dates), not an ingestion bug; 28,186 docs embedded → 61,458 chunks in Chroma (zero-body docs carry no chunks).
+**Corpus-wide state (verified 2026-07-04).** `ingest_documents` under Django has completed the full corpus: **455,286 base-email `Document` rows**, of which **288,822 (63.4%) have non-empty bodies** — the remainder are legitimate header-only records (calendar items, Notes housekeeping, etc.) as previously identified on the dev subset. `embed_documents` has embedded all non-empty-body rows: **288,822 distinct doc_ids → 470,033 chunks in Chroma** (zero-body docs carry no chunks by design). Confirmed by SQLite counts on `documents_document` and `data/chroma/chroma.sqlite3`. The stale dev-subset numbers (41,112 ingested / 28,186 embedded → 61,458 chunks) have been retired.
 
 **Runtime.** The full base-email corpus is ~455K messages; embedding on CPU with `all-MiniLM-L6-v2` is the bottleneck. Expect it to be the longest single step. For development, ingest a subset (all judged Topic-204 docs + 2–3 custodians as haystack) and only run the full corpus once, ahead of evaluation/demo. **Note:** any subset used to sanity-check the evaluation must include documents that appear in the Topic 204 qrels, or there will be nothing to score against.
 
@@ -667,10 +779,18 @@ SQLite, one database file (`db.sqlite3`, the Django default). Six main tables pl
 > and `agent_runs` needs a new `run_type` field. Field-name mismatches
 > (`completed_at`↔`finished_at`, `superseded_by`↔`superseder_id`,
 > `created_at`↔`corrected_at`) are cosmetic — pick one and align.
+>
+> **Resolved 2026-07-04.** `documents` gained `from_display`/`to_display`/`cc_display`
+> (migration 0002) and `parse_document_file` was corrected to `json.dumps`-encode
+> TEXT-JSON columns (`to_addrs`, `cc_addrs`, `attachment_refs`, `raw_headers`) —
+> previously it handed raw Python lists to `TextField`, which str()-repr'd them with
+> single quotes and broke `json.loads` in `read_document`. The live DB was built by an
+> earlier json-dumping version so existing rows are unaffected; the fix protects fresh
+> clones.
 
 ### `documents`
 
-Immutable after ingestion. **Base-email documents only** (attachments not ingested).
+Immutable after ingestion **except for one-time corrective backfills** (e.g. `backfill_participants` re-derives `*_display` and re-splits `to_addrs`/`cc_addrs` from `raw_headers`). No live UI write path exists. **Base-email documents only** (attachments not ingested).
 
 ```
 doc_id            TEXT PRIMARY KEY   -- filename stem = TREC canonical doc-id = qrel join key
@@ -688,14 +808,19 @@ body              TEXT               -- ZL boilerplate footer stripped
 custodian         TEXT               -- from directory name
 attachment_refs   TEXT               -- JSON array of {filename, mimetype} from any Attachment: line
 raw_headers       TEXT               -- JSON blob of the parsed header lines, for re-derivation
+from_display      TEXT               -- JSON object: one resolved unit {raw, display, kind, cn_code, email, domain}, or null
+to_display        TEXT               -- JSON array of resolved units (empty/null when no To)
+cc_display        TEXT               -- JSON array of resolved units (empty/null when no Cc)
 ```
 
 Indexes (via `Meta.indexes` / `db_index=True`): `thread_id`, `date`, `from_addr`, `custodian`.
 
-Read: `read_document`, evaluation, UI.
-Write: only by `ingest_documents` (and eval-mode upserts for judged doc-ids — see §2).
+Read: `read_document`, `find_participant_documents`, evaluation, UI.
+Write: only by `ingest_documents` (and eval-mode upserts for judged doc-ids — see §2). One-time corrective backfills (e.g. `backfill_participants`) are allowed.
 
-**Note on nullability:** `subject`, `from_addr`, `to_addrs`, `cc_addrs` are frequently null by nature of the corpus (see section 5). This is expected, not an ingestion bug. The only unconditionally-reliable fields are `doc_id`, `x_sdoc`, `x_zlid`, `date`, `custodian`, and `body`.
+**Note on nullability:** `subject`, `from_addr`, `to_addrs`, `cc_addrs`, and the `*_display` fields are frequently null by nature of the corpus (see section 5). This is expected, not an ingestion bug. The only unconditionally-reliable fields are `doc_id`, `x_sdoc`, `x_zlid`, `date`, `custodian`, and `body`.
+
+**TextField + `json.dumps` (not JSONField).** The JSON-carrying columns above are declared `TextField` and encoded with `json.dumps` at write time. Migrating to `JSONField` proper is cleaner but deferred — no functional gap while encoding is applied consistently. `read.py::_json_list` / `_json_obj` decode defensively (null / already-a-list / bare string fallback). Prior regression where `parse_document_file` handed raw Python lists to `TextField` (str()-repr with single quotes → broke downstream `json.loads`) was fixed 2026-07-04.
 
 ### `privilege_signals` (cache) — DROPPED from build scope (decision 2026-07-03)
 
@@ -947,9 +1072,15 @@ Both own the loop conceptually; the spec remains the tie-breaker.
 - [x] Topic 202 fallback evaluated and dismissed (387 ≫ 150 trigger)
 - [x] Artefacts + `data/raw/README.md` summaries drafted (qrels, seed, judged_204, index, overlap)
 - [x] `documents/parsing.py` written (seven deterministic loader rules)
-- [x] `ingest_documents` management command written — **[~] Django re-verification owed** (standalone run: 41,112 base emails, 27 corrupt-skipped, 0 read errors, 12,926 zero-body)
-- [x] `embed_documents` management command written — **[~] Django re-verification owed** (standalone: 28,186 embedded → 61,458 chunks)
-- [ ] Full-corpus ingest + embed under Django (overnight), idempotent, prints summary counts
+- [x] `ingest_documents` — full-corpus run complete: **455,286 base-email rows** in `documents_document`, of which **288,822 (63.4%) have non-empty bodies**. Idempotent.
+- [x] `embed_documents` — full-corpus run complete: **288,822 distinct doc_ids → 470,033 chunks** in Chroma (matches non-empty-body count exactly). Idempotent re-runs verified.
+- [x] `documents/participants.py` — bracket-anchored splitter + `resolve_unit` / `resolve_field` / `token_subset_match` / `MATCHABLE_KINDS`. Fixes the three splitter defects the survey identified (case-sensitive `</O=`; `Last, First` comma trap; bare-comma merges beside X.500). See §5.
+- [x] `documents/models.py` — `from_display`, `to_display`, `cc_display` (TextField / JSON) added; migration 0002 applied.
+- [x] `parse_document_file` — `_json_or_none` fix: TEXT-JSON columns (`to_addrs`, `cc_addrs`, `attachment_refs`, `raw_headers`) now `json.dumps`-encoded, fixing the read.py-breaking regression.
+- [x] `backfill_participants` management command — one-time corrective pass over existing rows: re-derives From/To/Cc from `raw_headers` via the new resolver, writes `to_addrs`/`cc_addrs` (JSON) + `from_display`/`to_display`/`cc_display`. Idempotent. First run corrected 21,174 To rows and 2,425 Cc rows. Bug-fix re-run (2026-07-04) additionally repaired 6,165 `from_display` rows where `resolve_field` had over-split bare "Last, First" From: values.
+- [x] `docs/participant-format-survey.md` — corpus-wide format census (455,286 rows, 151 custodians, category × field counts, splitter-defect examples, `x500_named` (CN, display) pairs, `bcc` confirmed empty, notable `other` cases).
+- [ ] **Task 7 — fresh-clone correctness.** `parse_document_file` still calls the old `split_participants` and does NOT populate `*_display` at ingest; `embed_documents` still calls `extract_sender_display` for Chroma's `sender` metadata. Update parse to use `resolve_unit`/`resolve_field` and populate the three display columns at ingest; update `embed_documents` to derive the Chroma `sender` from the resolver so fresh Chroma builds agree with SQL `from_display.display`. Retire `split_participants` / `extract_sender_display`. Goal: a fresh clone running `ingest_documents` → `embed_documents` reaches the current end state without needing the backfill.
+- [ ] Run `manage.py suggest_lawyer_cn_codes`, eyeball the candidates (watch for surname collisions: Tana Jones / Karen Jones; Cook / Moore / Davis), paste confirmed CN codes into `agent/lawyers.py`. Data task, no code change.
 
 ### B. Backend — data model / schema  (partly done; corrections owed)
 
@@ -979,14 +1110,14 @@ Both own the loop conceptually; the spec remains the tie-breaker.
 
 ### D. Backend — tools  (files exist; content partial)
 
-- [x] read_document (tools/read.py) — null-tolerant ORM fetch; tested
+- [x] read_document (tools/read.py) — null-tolerant ORM fetch; returns `from_display`/`to_display`/`cc_display` resolved units alongside raw; tested end-to-end.
 - [x] classify_relevance (tools/classify.py) — forced record_judgment tool call,
       Haiku, ~6k truncation, backoff; prompt v1 exists (no longer blocked)
-- [x] check_privilege_signals (tools/privilege.py) — deterministic; participant/
-      content/context signals + content-weighted strength; computed live
+- [x] check_privilege_signals (tools/privilege.py) — structural matching over resolved units (cn_code/email exact = high; display token-subset = low); `_strength` weights high-conf > display-only; `participants_unresolved` = "unless BOTH From & To usable"; `known_lawyers_in_*` shape now `[{name, via, matched}]`. Computed live.
 - [x] agent/prompts.py — orchestrator + classification prompt v1 + builders
 - [~] Lawyer-list fixture — 10 §5 custodians + 3-key structure scaffolded;
-      CN codes / name+email verification owed (grep recipe in file)
+      docstring updated for structural matching; `cn_codes` still empty (fill via `suggest_lawyer_cn_codes`, §8-A).
+- [ ] `find_participant_documents` (new §3 tool) — SQLite-backed scoped participant lookup. Primitives live in `documents/participants.py` (`token_subset_match`, `MATCHABLE_KINDS`); need the tool wrapper + review-state filter + LLM-facing schema + dispatch entry in `agent/tools/__init__.py`.
 - [~] search_documents — NEXT (Chroma query + review-state filter)
 - [~] request_human_review / await_human_resolution — bridges to loop (§C)
 
@@ -1053,10 +1184,10 @@ Things not to build. All are legitimate future work; none help the demo:
 - Rule-memory corrections propagation (context injection only). LLM-resummarised corrections at large cap (N=10 fixed).
 - Model choice exposed in UI. Bulk-select reversibility or full-run rollback (single-decision only).
 - Mid-batch reviewer intervention (corrections at batch boundaries only).
-- `extract_entities` tool (cut). `find_thread` tool (cut entirely, revision 3 — inline body markers only).
+- `extract_entities` tool (cut revision 1, stays cut 2026-07-04 — the "find people" use case is now served by the deterministic `find_participant_documents` tool over resolved display units, not by LLM-driven entity extraction over free body text). `find_thread` tool (cut entirely, revision 3 — inline body markers only).
 - Attachment ingestion (base emails only; eval restricted to base-email judgments to match).
 - Deriving real `@enron.com` addresses for X.500 participants (display-name / CN-code matching only).
-- CN→display-name corpus-wide map (lawyer list hand-carries CN codes).
+- CN→display-name corpus-wide map (cut revision 3, reinforced 2026-07-04: the participant-format survey found exactly one `x500_blank` unit corpus-wide, so a corpus-wide registry has ~zero remaining use case. Lawyer list hand-carries CN codes; `suggest_lawyer_cn_codes` mines candidates from the resolved units).
 - Audit-timeline query language / permalinks (plain filterable list). Pause/resume UI (schema supports resume; no UI). `issue_tags` UI (field kept, not surfaced).
 - Undo/redo beyond reversal-via-new-decision. Discard-batch action. Any authentication. Any tool not in section 3.
 

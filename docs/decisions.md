@@ -8,7 +8,110 @@ Entries follow the format (ordered most recent to least):
 - Rationale:
 - Revisit if:
 
-## 2026-07-03 — Feature-chat decisions: run-level criterion, forced classify tool use, live privilege signals
+## 2026-07-04 — Participant identity resolution: structured display units, splitter fix, structural privilege matching, scoped-retrieval tool
+
+**Context.** The revision-4 corpus-wide participant-format survey
+(`docs/participant-format-survey.md`) quantified that participants appear in three
+inconsistent forms (SMTP / X.500 DN / bare display name) with meaningful mis-splits in
+the previous `documents/parsing.py::split_participants` — case-sensitive `</O=` marker
+missing lowercase `</o=` (980 docs), `Last, First <addr>` comma trap under the plain-comma
+branch (609 docs), and bare-comma addresses merged into a single unit beside an X.500
+recipient. Downstream: `check_privilege_signals` did substring matching over raw
+participant text (surname-collision-prone, mis-split-blind), and the reviewer UI would
+have to render raw X.500 DNs and IMCEAEX proxy strings without any canonical display.
+The 2026-07-03 Pending item **General alias → canonical-identity resolution** flagged
+this as a Mode-1 decision to make before privilege matching could be trusted, and coupled
+to it, the lawyer-list-scope Pending item on how to fill CN codes.
+
+This entry records the resolutions of those Pending items, plus three closely-coupled
+decisions that fall out of the same work (splitter fix, structural matching, and the new
+scoped-retrieval tool that supersedes the cut `extract_entities`). All four decisions are
+implemented in code and verified against the full 455,286-row live DB.
+
+---
+
+**Decision 1 — Participant identity resolution: structured display units on `Document`, deterministic at ingest, no separate registry table. Bracket-anchored splitter with a From:-only special case.**
+
+Options considered:
+1. **Bounded/lazy resolver at read time** — resolve only participants that appear in reviewed documents, per read_document call. Cheaper to build; leaves everything not-read unresolved; couples resolution to the loop path; harder to render consistently across queue / active document / audit panels.
+2. **Precomputed corpus-wide registry table** — the previously-cut option; identity table keyed by CN code + display + email; ingestion populates. Reintroduces the cut work; needs identity clustering with no ground truth to score against.
+3. **Structured units on `Document`, resolved deterministically at ingest, no registry** (SELECTED) — each row carries `from_display` (one JSON unit or null) and `to_display`/`cc_display` (JSON arrays), where each unit is `{raw, display, kind, cn_code, email, domain}`. No canonical person ID: two units with the same `cn_code` are the same person by construction; two units with the same `display` are almost certainly the same person; two SMTP-vs-X.500 forms of the same person stay unlinked and the reviewer adjudicates. Raw From/To/Cc kept alongside for audit.
+
+Decision: Option 3. Structured units on `Document`. Backfill from `raw_headers` (populated 100%). Chroma intentionally untouched — bodies are unchanged so no re-embed needed; Chroma's `sender` metadata is a display hint only, not authoritative for participant matching.
+
+**Splitter — bracket-anchored, `resolve_field` for multi-participant fields and `resolve_unit` for the single-participant From:**. `resolve_field` walks the raw value, anchors on `<...>` (which never contains a real separator in this corpus), peels complete email tokens off the front of each pre-bracket prefix, and treats the trailing non-email run as that bracket's display name. This fixes all three survey defects at once (case-insensitive brackets, `Last, First <addr>` preserved, bare-comma addresses split correctly). It has a deliberate over-grouping bias: a bracketless `"Last, First"` over-splits into `"Last"` + `"First"` bare-name units. `From:` always carries one participant, so ingest / backfill calls `resolve_unit` directly, which does NOT comma-split — this preserves bare `"Last, First"` sender names as one bare_name unit. The initial backfill used `resolve_field` for From and lost the given name on 6,165 `from_display` rows (verified — `Stark, Cindy` → `Stark`, `Kaminski, Vince J` → `Kaminski`, etc.); corrected same day and re-run idempotently repaired all 6,165.
+
+**Keep-both raw + display.** Raw `from_addr` / `to_addrs` / `cc_addrs` are retained on the row. Two reasons: minimal disruption to any code reading raw participants (search, audit trail regeneration, future re-parsing), and audit-verbatim guarantee — the resolver's per-unit `raw` field is canonicalised (whitespace normalised, trailing separator dropped), not byte-for-byte from the header, so pristine text lives on `raw_headers` + the raw `_addrs` columns.
+
+**CN → display-name registry stays cut (reinforced).** The 2026-07-03 Pending item asked whether to revive it. The survey's finding — exactly ONE `x500_blank` unit in the whole 2.2M-unit corpus, and even that one was a splitter artifact from a lowercase `</o=` value now correctly parsed — collapses the argument for a registry. Every X.500 DN in the corpus carries its display prefix inline; there is no case where a lookup table would recover a name that isn't already sitting next to the DN.
+
+**`extract_entities` stays cut.** The "find people" need surfaced by the corrections work is served by Decision 4 (structured lookup), not by LLM entity extraction over free body text.
+
+Rationale: puts identity where it belongs (on the participant unit, deterministic, at ingest) without paying for a canonical person ID the corpus can't support. The reviewer UI can render a uniform canonical name for every participant; the agent can apply corrections that name individuals to future documents through structural matching; the audit trail records which key hit ("via cn_code=Sshackl" vs "via display 'Shackleton, Sara M.'").
+
+Spec edits (applied): §3 read_document (Document shape includes `*_display`); §5 Address formats (corrected splitter, three fixed defects with counts, over-grouping bias, From:-only `resolve_unit` special case, keep-both, registry-cut reinforcement); §6 `documents` schema (three new columns, immutability amended to allow one-time corrective backfills); §8-A checklist (splitter + resolver + backfill run).
+
+Revisit condition: if the reviewer or the agent surfaces recurring "same-person disambiguation" pain that a canonical person ID would fix (across CN + SMTP + bare display), reopen — the resolver's structured units are the natural input to a later identity clustering pass. If EDRM XML metadata is ever ingested (which carries directory info), reopen.
+
+---
+
+**Decision 2 — TEXT-JSON columns are `json.dumps`-encoded via `TextField`; migrating to `JSONField` proper is deferred.**
+
+Options considered:
+1. Migrate `to_addrs`, `cc_addrs`, `attachment_refs`, `raw_headers`, `*_display` to Django `JSONField` (cleaner: no manual encode/decode; SQLite JSON1 available for queries).
+2. Keep `TextField` + `json.dumps` at write time and `json.loads` at read time (SELECTED).
+
+Decision: Option 2. Fix `parse_document_file` to `json.dumps`-encode consistently; leave the column types as `TextField` for now.
+
+Rationale: the live DB was built by an earlier json-dumping version, so existing rows are correct JSON strings and `read_document` was never actually broken in production; the regression only affects fresh clones. Migrating to `JSONField` is a mechanical change that adds no functional capability at demo scale, whereas fixing the encoding in-place is a one-line addition and unblocks fresh-clone correctness. The §6 shape description ("TEXT — JSON") stays exactly correct.
+
+Spec edits (applied): §5 "Serialisation of TEXT-JSON columns" paragraph; §6 documents schema note; §6 code-conformance note (added "Resolved 2026-07-04" block).
+
+Revisit condition: if any query needs SQLite JSON1 (indexed queries into a JSON payload, e.g. "find docs where any `to_display[i].cn_code == 'Sshackl'"), migrate the specific column to `JSONField` at that point. Currently all such lookups are Python-side after a coarser SQL filter, which is fine at 455k rows.
+
+---
+
+**Decision 3 — `check_privilege_signals` matches participants STRUCTURALLY (cn_code / email exact = high; display token-subset = low); `participants_unresolved` fires unless BOTH From AND To carry a matchable unit; `known_lawyers_in_*` shape changes from `[str]` to `[{name, via, matched}]`; strength weighting downgrades display-only matches.**
+
+Options considered:
+1. Keep the substring `_match_participants` — scan raw participant text for lawyer surnames. Simple, but blind to mis-splits and surname-collision-prone.
+2. Structural match on the resolved units (SELECTED) — for each unit, check `cn_code` (exact, high confidence), then `email` (exact, high confidence), then `display` (`token_subset_match` against variants, low confidence). Precedence: exact wins over display across ALL lawyers.
+
+Decision: Option 2.
+
+Rationale: substring matching was breaking on the same 6,165 + 973 + 609 doc splitter defects Decision 1 fixes. With resolved units available, structural matching is not just possible but correct: an Exchange CN code is a person key; an email is a person key; a display token-subset is a heuristic and its confidence is honestly reflected in the audit trail (`via: "display"` vs `via: "cn_code"`).
+
+The `participants_unresolved` semantics change ("unless BOTH From AND To carry ≥1 matchable participant", vs the previous "true only when both missing") deliberately raises the false-positive rate on the flag (~40% of docs now flag). This is aligned with the §3 stance: "no lawyer found" must not read as "not privileged." A field that is present but composed entirely of `x500_blank`/`other` units (undisclosed-recipients, suppression labels) is not usable evidence and shouldn't count.
+
+The output shape change (`known_lawyers_in_*: [str]` → `[{name, via, matched}]`) is a break, but there are no consumers of the old shape today (verified: `prompts.py`, `loop.py`, and the React frontend have zero references). The new shape carries the audit trail the deterministic-and-defensible design demands.
+
+Strength weighting refined: `weak` for display-only lawyer alone (surname-collision-prone), `moderate` for high-confidence participant alone or with one content signal, `strong` reserved for high-conf + two content signals or lawyer + external counsel + content. Prevents a bare-display match (potentially wrong person) from bumping the aggregate signal above the content evidence.
+
+Spec edits (applied): §3 `check_privilege_signals` (PrivilegeSignals shape; structural matching paragraph; `participants_unresolved` refined semantics; strength weighting refined; address-matching reality reworked); §8-D checklist (marked done).
+
+Revisit condition: if lawyer-list fill (`suggest_lawyer_cn_codes` output pasted into `lawyers.py`) produces many high-conf hits and the display-only tier becomes marginal, reconsider dropping the display tier entirely for higher precision. If corrections surface "this specific same-name person is NOT the lawyer" cases, add a per-lawyer exclusion list (rare in the demo).
+
+---
+
+**Decision 4 — Add `find_participant_documents` as a new §3 tool: scoped participant-name lookup over SQLite `*_display` columns. NOT canonical-identity resolution.**
+
+Options considered:
+1. Do nothing; when the reviewer or agent needs to trace a person, use `search_documents` with the name as a semantic query. **Rejected**: Chroma's semantic search matches body content, not participant metadata — a document from Shackleton discussing "swap agreements" will be found by a "swap" query, not by a "Shackleton" query, because the body may not mention her. This blurs the retrieval story.
+2. Add a person-scoped structured lookup tool (SELECTED). Match query name tokens against `*_display[i].display` via `token_subset_match`; short-circuit against `email` (if query has `@`) or `cn_code` (if query is a lone identifier). Return the matching UNIT so the caller sees which form hit. No canonical person IDs — the reviewer adjudicates whether two hits are the same person.
+
+Decision: Option 2. Full write-up in §3 `find_participant_documents`.
+
+Rationale: the corrections mechanism (§2) requires that a correction naming a person can influence future documents involving that person. Without a person-scoped lookup, the agent can only apply such a correction opportunistically when the person happens to appear in the next document — and even then, it has to spot the person across three inconsistent address forms. `find_participant_documents` makes this a first-class capability, deterministically and without adding an identity registry the corpus can't support. It also fits the "structured vs semantic" separation: `search_documents` is Chroma over bodies, `find_participant_documents` is SQLite over participant units — two different questions, two different tools. Adjacent to but distinct from the cut `extract_entities` (that was LLM entity extraction over free text; this is deterministic person-scoped retrieval).
+
+Match rule is `token_subset_match`, same primitive `check_privilege_signals` uses for lawyer display matching — one matcher for the codebase, no drift.
+
+Spec edits (applied): §3 new `find_participant_documents` subsection (full write-up); §5 note on tool separation; §8-D TODO added; defer list updated to note `extract_entities` stays cut, superseded by this deterministic alternative.
+
+Revisit condition: if the match rule (token-subset) proves too broad on common surnames (Jones, Cook, Moore, Davis all appear as counsel — see the Lawyer-list Pending resolution below), tighten with a "must-match" mode that requires at least two tokens. Feature-chat for the tool wrapper finalises the match rule and any surname disambiguation UX. If EDRM XML metadata is ever ingested, this tool can additionally query real Internet headers.
+
+---
+
+
 
 **Context.** Three decisions were reached in the `classify.py` and `privilege.py` feature
 chats. Decisions 2 and 3 are implemented in code (verified: forced `record_judgment` in
@@ -111,70 +214,50 @@ larger scale (many thousands of live reviews), reintroduce the cache.
 _Not yet decided. Recorded here so the open questions and their couplings are not lost
 between sessions. To be resolved in a Mode 1 (Architecture) chat._
 
-**PENDING — General alias → canonical-identity resolution (reopens two cut decisions).**
+**RESOLVED 2026-07-04 — General alias → canonical-identity resolution.**
 
-Decision to be made: whether to build a resolver that maps any participant form (clean
-SMTP, X.500 DN / bare `CN=CODE`, bare display name) to a single canonical identity, and
-in what form — a bounded/lazy resolve-at-read-time approach (resolve only participants
-in reviewed documents) versus a precomputed corpus-wide registry table.
+Resolved by the 2026-07-04 entry above (Decisions 1 + 4). Summary of what was chosen and
+why the framing shifted:
+- **Structured display units on `Document`, not a canonical person ID or a corpus-wide
+  registry.** Each unit carries `{raw, display, kind, cn_code, email, domain}`; two units
+  are "the same person" by equality on `cn_code` or `email` (deterministic), or by
+  reviewer judgement on display (adjudicated, not automated). The rev-3 CN registry cut
+  is reinforced — the participant-format survey found exactly one `x500_blank` unit
+  corpus-wide, so a lookup table would recover nothing that isn't already sitting next
+  to the DN.
+- **`extract_entities` stays cut.** The "find people" need that motivated reopening is
+  served by `find_participant_documents` (Decision 4) — deterministic structured lookup
+  over the resolved units, not LLM entity extraction over free body text.
+- **UI consistency achieved via `display` field on the resolved unit** (§4).
+- **Corrections-identity achieved via structural matching in `check_privilege_signals`
+  (Decision 3) + `find_participant_documents` (Decision 4).** The agent can apply a
+  correction naming a person to future documents by structural match, without a
+  canonical ID.
 
-This reopens explicitly cut decisions and must be treated as a reopen, not a fresh idea:
-`extract_entities` (cut revision 1, "the agent rarely needs entity extraction") and the
-corpus-wide `CN → display-name` map (cut revision 3, on the 2-day budget).
-
-New information not weighed at cut time (the justification to reopen):
-- UI consistency — the reviewer's to/from/cc panel should show uniform canonical names,
-  not a mix of emails, X.500 DNs, and bare display names. (Stronger than the rev-1
-  framing of "nicer display.")
-- Corrections-identity (agent-facing, not anticipated by the rev-1 cut) — a correction
-  names a person ("Person A is a lawyer but does not hold privilege"); the agent, reading
-  a document where that person appears as a CN code or email, must resolve alias →
-  identity to apply the guidance. This is a genuine agent-path requirement.
-- It subsumes the lawyer-alias-finding work (see the coupled pending item below).
-
-Feasibility note for the decision: X.500 DNs carry the display name in the prefix
-(`Name </…CN=CODE>`), so a corpus scan pairs CN codes ↔ display names directly — the
-absent corpus directory is not a blocker. The rev-3 cut was a budget call, not an
-infeasibility one.
-
-Depends on:
-- The 2-day build budget — is it worth ~half a day of the two?
-- Whether identity is needed at read-time (agent path, harder) or only at display-time
-  (UI path, cheaper) — the corrections requirement pushes toward read-time.
-- Bounded/lazy vs full precomputed registry.
-
-Affects:
-- `read_document` — does it return a canonical identity alongside raw participants?
-- The corrections mechanism — how corrections reference and resolve people.
-- The UI active-document panel (§4 display).
-- `lawyers.py` — lawyer aliases become a byproduct of the resolver rather than a
-  separate manual grep.
-- The status of the two cut items (`extract_entities`, `CN → display-name` map).
-
-Where decided: Mode 1 / "Chat A". Produces a spec amendment + a full decisions.md entry.
+Feasibility note that had been recorded here (CN codes and display names are inline in
+the DN, so a corpus scan pairs them without a directory) stood up — implemented as
+`manage.py suggest_lawyer_cn_codes`.
 
 ---
 
-**PENDING — Lawyer-list scope: ~10 custodians vs broader roster.**
+**RESOLVED 2026-07-04 (partially) — Lawyer-list scope: ~10 custodians vs broader roster.**
 
-Decision to be made: keep the ~10 §5 lawyer-custodians, or expand — add prominent
-non-custodian in-house counsel (e.g. Jordan Mintz, GC of Enron Global Finance; Rex
-Rogers, VP & Associate GC), and/or move toward the full legal roster (Enron's legal
-department ran to dozens of attorneys).
+Partially resolved by the 2026-07-04 entry above. The hard part — CN codes cannot be
+guessed and needed manual grep — is now automated by `manage.py suggest_lawyer_cn_codes`
+(mines candidates from resolved `x500_named` units, prints them with hit counts and a
+surname-collision warning for eyeball). Expansion beyond the 10 §5 custodians is now
+cheap: the same command surfaces CN codes for any surname added to `LAWYERS`.
 
-Depends on: the identity-resolver decision above. With a resolver + alias map,
-expanding is cheap and low-risk; without it, expansion is manual grep plus false-positive
-risk on common surnames (e.g. "Cook", "Moore", "Davis" all appear as counsel).
+Still to decide (deferred to the lawyer-list feature chat, "Chat C"):
+- Which non-custodian counsel to add (Jordan Mintz / Rex Rogers / broader roster).
+- Verification fixes already identified: "Jones" is ambiguous (Karen Jones, AGC
+  Portland, vs custodian Tana Jones); Shackleton / Nemec / Heard unverified; Haedicke,
+  Sager, Mann, Sanders, Taylor, Derrick (James V.) confirmed. External counsel: Vinson
+  & Elkins (velaw.com) confirmed; Andrews & Kurth to add; NOT Alston & Bird (bankruptcy
+  examiner, not Enron counsel).
 
-Affects: `check_privilege_signals` recall vs precision; the fill/verify work in
-`lawyers.py`. Also carries verification fixes already identified: "Jones" is ambiguous
-(Karen Jones, AGC Portland, vs custodian Tana Jones — confirm which, and whether an
-attorney); Shackleton / Nemec / Heard unverified; Haedicke, Sager, Mann, Sanders,
-Taylor, Derrick (James V.) confirmed. External counsel: Vinson & Elkins (velaw.com),
-Andrews & Kurth (add domain); not Alston & Bird (bankruptcy examiner, not Enron counsel).
-
-Where decided: coupled to Chat A (resolver); finalized in the lawyer-list feature chat
-("Chat C").
+Where decided: Chat C. The resolver + suggest command make this a data task now, not an
+identity-resolution problem.
 
 
 

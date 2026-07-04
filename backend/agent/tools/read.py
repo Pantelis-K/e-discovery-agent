@@ -35,6 +35,18 @@ def _json_list(value) -> list:
         return [value]
     return parsed if isinstance(parsed, list) else [parsed]
 
+def _json_obj(value):
+    """Parse a TEXT field storing a single JSON object; None if absent/invalid.
+    Used for from_display, which holds one resolved unit rather than a list."""
+    if not value:
+        return None
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(value)
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 def read_document(doc_id: str) -> dict:
     """Fetch one document by id. Returns a dict, or {"error": ...} if not found.
@@ -54,6 +66,11 @@ def read_document(doc_id: str) -> dict:
         "from": doc.from_addr,                               # often null; SMTP / X.500 DN / bare name
         "to": _json_list(doc.to_addrs),                      # often empty (~66% present)
         "cc": _json_list(doc.cc_addrs),                      # usually empty (~11% present)
+        # Resolved participant display (spec §5). Structured units
+        # {raw, display, kind, cn_code, email, domain}; raw above kept for audit.
+        "from_display": _json_obj(doc.from_display),         # one unit or None
+        "to_display": _json_list(doc.to_display),            # list of units
+        "cc_display": _json_list(doc.cc_display),            # list of units
         "date": doc.date.isoformat() if doc.date else None,  # always present in practice
         "body": doc.body or "",
         "custodian": doc.custodian,
