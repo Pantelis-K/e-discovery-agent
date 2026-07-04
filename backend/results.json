@@ -1,0 +1,27 @@
+{
+  "run_id": "eval-plan-a-204",
+  "topic": 204,
+  "judged_base_emails": 2028,
+  "seed_overlap_excluded": 47,
+  "eval_pool_size": 1981,
+  "scored": 1980,
+  "missing_decisions": 1,
+  "missing_doc_ids_sample": [
+    "3.566402.B0QJR2Z15KPXE2ZEL3PDGMG45ACFCDCRB"
+  ],
+  "confusion": {
+    "tp": 267,
+    "fp": 67,
+    "fn": 89,
+    "tn": 1557
+  },
+  "recall": 0.75,
+  "precision": 0.7994,
+  "f1": 0.7739,
+  "recall_ceiling_footnote": {
+    "gold_relevant_total": 356,
+    "gold_relevant_empty_or_missing_body": 40,
+    "achievable_relevant": 316,
+    "recall_ceiling": 0.8876
+  }
+}

@@ -1161,18 +1161,18 @@ Both own the loop conceptually; the spec remains the tie-breaker.
 - [x] Graceful rendering around missing subject/sender everywhere
 - [ ] Single-decision reversal — **stretch** (first to cut; timeline read-only if dropped)
 
-### G. Evaluation  (Person A — `run_eval.py` is empty)
+### G. Evaluation  (done — run `eval-plan-a-204`, 2025-07-04)
 
-- [ ] `run_eval.py` — headless: classify judged 204 base emails (Haiku, prompt v1), concurrency 5 + backoff, ~6k-char truncation, resumable, writes `decisions` under a `run_type='eval'` run
-- [ ] `report_eval.py` — recall / precision / F1 / confusion → `results.json`; subtract the 47 overlap doc-ids
-- [ ] 50-doc pilot — confirm per-doc cost, latency, valid structured output; sanity-check vs a few seed labels
-- [ ] Plan A vs Plan B decision from the pilot cost check
-- [ ] Record the ~89.7% recall-ceiling footnote for the results slide
+- [x] `run_eval.py` — headless: classify judged 204 base emails (Haiku, prompt v1), concurrency 5 + backoff, ~6k-char truncation, resumable, writes `decisions` under a `run_type='eval'` run. Full run: 2,027/2,028 classified (1 binary-corrupt file skipped), 0 errors.
+- [x] `report_eval.py` — recall / precision / F1 / confusion → `results.json`; subtracts the 47 overlap doc-ids. Full-run numbers: **recall 0.7500, precision 0.7994, F1 0.7739**, confusion TP=267 / FP=67 / FN=89 / TN=1,557, scored 1,980 of 1,981 eval-pool docs.
+- [x] 50-doc pilot — confirmed cost ($0.125 / 50 docs = ~$0.0025/doc), latency (~110-145 docs/min), valid structured output (0 errors); extrapolated full-pool cost (~$5.07) matched the actual full-run cost (~$5.14).
+- [x] Plan A vs Plan B decision from the pilot cost check — pilot confirmed Plan A (full 2,028-doc pool) fits the £10–15 budget envelope; ran Plan A directly, no need for Plan B's smaller sample.
+- [x] Recall-ceiling footnote recorded: on the scored eval pool (post seed-overlap exclusion, 356 relevant docs), 40 have empty/header-only bodies → achievable ceiling **88.76%** (316/356). (The spec's earlier pre-exclusion estimate was ~89.7%, 347/387 — the two are computed over slightly different denominators; both describe the same empty-body-ceiling phenomenon.)
 
 ### H. Demo prep & submission
 
 - [~] Demo-document selection — candidates identified (`3.34550.I0JJT5…` Duncan/Temple; `3.537709.IYGOZ…`); still need one ambiguous retention-schedule doc + one preservation notice
-- [ ] Results-slide numbers from `report_eval.py`; throughput figures (Metric 2)
+- [x] Results-slide numbers from `report_eval.py`; throughput figures (Metric 2): **Metric 1 (accuracy)** — recall 75.0%, precision 79.9%, F1 77.4% on 1,980 scored docs (Topic 204 judged pool, 2,028 docs minus 47 seed-overlap minus 1 corrupt-file skip), against an 88.76% achievable-recall ceiling. **Metric 2 (throughput)** — ~145 docs/min sustained on Haiku 4.5 concurrency 5 (full 2,027-doc run in ~14 min wall-clock, 3,348,771 input + 358,296 output tokens, ~$5.14 total).
 - [ ] Record video (Sonnet orchestrator, batch 25, full/largest corpus; multiple takes until the correction-propagation beat lands)
 - [ ] Deck (problem, solution, cockpit, honest results, impact, what's next: privilege qrels / XML metadata / structured rule memory)
 - [ ] Repo README with setup + the eval reproduction command; submission text last
