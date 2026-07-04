@@ -4,6 +4,8 @@
 
 An AI-assisted e-discovery cockpit that keeps a human reviewer in full control of the agent doing the work.
 
+[![Watch the demo](https://img.youtube.com/vi/5ZlkEV9O2KU/maxresdefault.jpg)](https://youtu.be/5ZlkEV9O2KU)
+
 ---
 
 ## The business case
