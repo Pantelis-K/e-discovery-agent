@@ -24,7 +24,7 @@ export default function Login({ onLogin }) {
 					<CardContent sx={{ p: { xs: 4, md: 5 } }}>
 						<Stack direction="row" spacing={1} alignItems="center" justifyContent="center" sx={{ mb: 3 }}>
 							<Box sx={{ width: 26, height: 26, borderRadius: '7px', background: `linear-gradient(135deg, ${accent}, ${palette.primary.light})` }} />
-							<Typography sx={{ fontWeight: 800, letterSpacing: '-0.02em', color: ink }}>Veridex</Typography>
+							<Typography sx={{ fontWeight: 800, letterSpacing: '-0.02em', color: ink }}>FunkE</Typography>
 						</Stack>
 						<Typography variant="h4" sx={{ fontWeight: 800, letterSpacing: '-0.02em', mb: 1, textAlign: 'center' }}>
 							Welcome back

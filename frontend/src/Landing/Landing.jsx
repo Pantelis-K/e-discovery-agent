@@ -98,7 +98,7 @@ export default function Landing() {
                         Turn millions of documents<br />into a decision, not a project.
                     </Typography>
                     <Typography sx={{ color: muted, fontSize: { xs: 17, md: 20 }, mt: 3, maxWidth: 620, mx: 'auto' }}>
-                        Veridex runs an autonomous review loop across your entire discovery set, ranks relevance, and hands your team defensible, one-click calls.
+                        FunkE runs an autonomous review loop across your entire discovery set, ranks relevance, and hands your team defensible, one-click calls.
                     </Typography>
                     <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} justifyContent="center" sx={{ mt: 4 }}>
                         <Button variant="contained" size="large" onClick={() => navigate('/login')} disableElevation sx={{ bgcolor: accent, px: 4, '&:hover': { bgcolor: theme.palette.primary.dark } }}>Get started</Button>
@@ -189,7 +189,7 @@ export default function Landing() {
                 <Typography variant="h3" sx={{ fontWeight: 800, letterSpacing: '-0.02em', fontSize: { xs: 30, md: 44 }, mb: 2 }}>
                     See your first matter reviewed in an afternoon
                 </Typography>
-                <Typography sx={{ color: muted, mb: 4 }}>No rip-and-replace. Point Veridex at a dataset and watch the queue empty.</Typography>
+                <Typography sx={{ color: muted, mb: 4 }}>No rip-and-replace. Point FunkE at a dataset and watch the queue empty.</Typography>
                 <Button variant="contained" size="large" onClick={() => navigate('/login')} disableElevation sx={{ bgcolor: ACCENT, textTransform: 'none', fontWeight: 700, borderRadius: 2, px: 5, py: 1.4, '&:hover': { bgcolor: '#2E3CA8' } }}>Get started</Button>
             </Container>
 
@@ -197,7 +197,7 @@ export default function Landing() {
             <Box sx={{ borderTop: `1px solid ${border}`, py: 4 }}>
                 <Container maxWidth="lg">
                     <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems="center" spacing={2}>
-                        <Typography sx={{ color: muted, fontSize: 13 }}>© {new Date().getFullYear()} Veridex Inc. All rights reserved.</Typography>
+                        <Typography sx={{ color: muted, fontSize: 13 }}>© {new Date().getFullYear()} FunkE Inc. All rights reserved.</Typography>
                         <Stack direction="row" spacing={3}>
                             {['Privacy', 'Terms', 'Security', 'Status'].map(l => (
                                 <Typography key={l} sx={{ color: muted, fontSize: 13, cursor: "pointer", "&:hover": { color: ink } }}>{l}</Typography>
@@ -225,7 +225,7 @@ export default function Landing() {
                             Oops — you caught us!
                         </Typography>
                         <Typography sx={{ color: muted, fontSize: 17, lineHeight: 1.6, mb: 4 }}>
-                            There’s no more page down here. Veridex isn’t a real product — it’s a hackathon demo, and the quotes above are (lovingly) made up. The agent behind it, though? Very real. Go try it.
+                            There’s no more page down here. FunkE isn’t a real product — it’s a hackathon demo, and the quotes above are (lovingly) made up. The agent behind it, though? Very real. Go try it.
                         </Typography>
                         <Button variant="contained" onClick={handleBack} disableElevation sx={{ bgcolor: accent, borderRadius: 2, px: 4, py: 1.2, '&:hover': { bgcolor: theme.palette.primary.dark } }}>
                             Take me back up ↑

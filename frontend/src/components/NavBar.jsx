@@ -22,7 +22,7 @@ export default function NavBar({ loggedIn, onLogout }) {
                 <Toolbar disableGutters sx={{ gap: 3, py: 1 }}>
                     <Stack direction="row" alignItems="center" spacing={1} onClick={() => navigate('/')} sx={{ cursor: 'pointer' }}>
                         <Box sx={{ width: 26, height: 26, background: `linear-gradient(135deg, ${accent}, ${theme.palette.primary.light})` }} />
-                        <Typography sx={{ fontWeight: 800, letterSpacing: '-0.02em', color: ink }}>Veridex</Typography>
+                        <Typography sx={{ fontWeight: 800, letterSpacing: '-0.02em', color: ink }}>FunkE</Typography>
                     </Stack>
 
                     {!isMobile && (
