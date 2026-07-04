@@ -41,13 +41,12 @@ class CorrectionAdmin(admin.ModelAdmin):
         "correction_id",
         "run_id",
         "doc_id",
-        "field",
         "original_value",
         "corrected_value",
         "corrected_at",
         "corrected_by",
     )
-    list_filter = ("field", "corrected_by", "corrected_at")
+    list_filter = ("corrected_by", "corrected_at")
     search_fields = ("run_id__run_id", "doc_id__id", "corrected_by")
     readonly_fields = ("correction_id", "corrected_at")
 

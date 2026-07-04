@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Box, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography, useTheme } from '@mui/material'
+import { Box, Button, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography, useTheme } from '@mui/material'
 import ActionsTableRow from './ActionsTableRow'
 
 const COLUMNS = [
@@ -7,7 +7,7 @@ const COLUMNS = [
     { label: 'Rel', align: 'center', width: 50 },
     { label: 'Priv', align: 'center', width: 50 },
     { label: 'Reasoning', align: 'left' },
-    { label: '', align: 'center', width: 50 },
+    { label: '', align: 'center', width: 100 },
 ]
 
 const REASONING_WORDS = [
@@ -34,14 +34,51 @@ function buildRows() {
     }))
 }
 
+const API_BASE = 'http://localhost:8000/api'
+
 export default function ActionsTable({ caseItem, sx }) {
     const theme = useTheme()
     const { muted } = theme.palette.brand
     const border = theme.palette.divider
     const [rows, setRows] = useState(buildRows)
+    // Keyed by row id so repeated edits to the same row collapse into one
+    // entry holding its current state, not a history of every keystroke.
+    const [changes, setChanges] = useState({})
 
-    const updateRow = (id, changes) => {
-        setRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...changes } : row)))
+    const updateRow = (id, fieldChanges) => {
+        setRows((prev) => {
+            const next = prev.map((row) => (row.id === id ? { ...row, ...fieldChanges } : row))
+            const updated = next.find((row) => row.id === id)
+            setChanges((prevChanges) => ({
+                ...prevChanges,
+                [id]: {
+                    doc_id: updated.document,
+                    relevant: updated.relevant,
+                    privileged: updated.privileged,
+                    reasoning: updated.reasoning,
+                },
+            }))
+            return next
+        })
+    }
+
+    const bulkApprove = async () => {
+        const payload = Object.values(changes)
+        if (payload.length > 0) {
+            try {
+                const res = await fetch(`${API_BASE}/corrections/bulk/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                })
+                if (!res.ok) throw new Error(`Bulk approve failed: ${res.status}`)
+                setChanges({})
+            } catch (err) {
+                console.error('Bulk approve failed to submit corrections:', err)
+                return
+            }
+        }
+        setRows((prev) => prev.map((row) => ({ ...row, actioned: true })))
     }
 
     return (
@@ -63,16 +100,26 @@ export default function ActionsTable({ caseItem, sx }) {
                                         width: col.width,
                                         ...(col.width ? { px: 0 } : {}),
                                         ...(col.label === 'Reasoning' ? { pl: 3 } : {}),
+                                        ...(col.label === '' ? { maxWidth: 100 } : {}),
                                     }}
                                 >
-                                    {col.label}
+                                    {col.label || (
+                                        <Button
+                                            size="small"
+                                            variant="text"
+                                            onClick={bulkApprove}
+                                            sx={{ minWidth: 0, px: 1, textTransform: 'none' }}
+                                        >
+                                            Bulk approve
+                                        </Button>
+                                    )}
                                 </TableCell>
                             ))}
                         </TableRow>
                     </TableHead>
                     <TableBody>
                         {rows.map((row) => (
-                            <ActionsTableRow key={row.id} row={row} onChange={(changes) => updateRow(row.id, changes)} />
+                            <ActionsTableRow key={row.id} row={row} onChange={(fieldChanges) => updateRow(row.id, fieldChanges)} />
                         ))}
                     </TableBody>
                 </Table>
