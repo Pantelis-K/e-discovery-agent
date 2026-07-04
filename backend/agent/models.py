@@ -90,9 +90,34 @@ class AuditEvent(models.Model):
     event_type = models.CharField(max_length=255)  # e.g., "decision_made", "correction_applied"
     target_doc_id = models.CharField(max_length=255, null=True, blank=True)  # the document affected by the event
     payload = models.CharField(max_length=255, null=True, blank=True)  # additional details about the event
-    
+
     class Meta:
         pass
 
     def __str__(self):
         return f"AuditEvent {self.event_id} for Run {self.run_id} (Type: {self.event_type})"
+
+
+class HumanReviewRequest(models.Model):
+    """Persistent pending-review row backing the request_human_review tool (spec §2, §3).
+
+    Created by `agent.tools.human_review.await_human_resolution` immediately before
+    the tool blocks in a polling wait; resolved by a `POST /runs/<run_id>/resolve`
+    endpoint that fills `resolution` and `resolved_at`. Persisted *before* the wait
+    so a crash mid-wait recovers from the DB row rather than losing the pending
+    handoff (spec §2 Option-1 durability requirement).
+    """
+    request_id = models.AutoField(primary_key=True)
+    run_id = models.ForeignKey(AgentRun, on_delete=models.CASCADE, related_name="human_reviews")
+    doc_id = models.ForeignKey(Document, on_delete=models.CASCADE, related_name="human_reviews")
+    reason = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolution = models.JSONField(null=True, blank=True)  # {decision: {...}, reviewer_notes: str}
+
+    class Meta:
+        pass
+
+    def __str__(self):
+        state = "pending" if self.resolved_at is None else "resolved"
+        return f"HumanReviewRequest {self.request_id} ({state}) run={self.run_id_id} doc={self.doc_id_id}"
