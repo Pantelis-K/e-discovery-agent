@@ -53,6 +53,7 @@ from django.utils import timezone
 
 from agent.models import AgentRun, AgentStep, Correction, Decision
 from agent.prompts import build_orchestrator_system_prompt
+from agent.queue import absorb_search_hits, queue_length, save_queue
 from agent.tools import execute_tool
 from agent.tools.human_review import await_human_resolution
 from api.serializers import _VALUE_PATTERN
@@ -77,8 +78,11 @@ CONFIDENCE_FLOOR = 0.60
 # §2 corrections propagation
 CORRECTIONS_INJECT_N = 10
 
-# §2 transcript window — last 3 iteration pairs (assistant + tool_result)
-MAX_TRANSCRIPT_PAIRS = 3
+# Transcript window — last N iteration pairs (assistant + tool_result). Bumped
+# from the spec's 3 to 8 because the pop_next → read → priv → classify → propose
+# per-doc flow is 5 turns; 3 pairs is too tight for cross-doc continuity, and prompt
+# cost stays modest at Haiku prices for a demo batch.
+MAX_TRANSCRIPT_PAIRS = 8
 
 # Rate-limit / transient-error backoff (mirrors classify.py)
 MAX_RETRIES = 5
@@ -136,9 +140,10 @@ TOOLS = [
     {
         "name": "search_documents",
         "description": (
-            "Semantic search over the email corpus. Returns up to 20 candidate documents "
-            "ranked by similarity to the query. Use in Phase 1 to populate the batch queue; "
-            "rarely in Phase 2."
+            "Semantic search over the email corpus. Up to 20 top-scoring candidates "
+            "are added to your batch queue; the tool returns queue COUNTS, not doc_ids "
+            "(you fetch candidates one at a time via pop_next_document). Use in Phase 1 "
+            "to populate the queue; rarely in Phase 2."
         ),
         "input_schema": {
             "type": "object",
@@ -163,6 +168,18 @@ TOOLS = [
             },
             "required": ["query"],
         },
+    },
+    {
+        "name": "pop_next_document",
+        "description": (
+            "Fetch the next candidate document from your batch queue. Returns "
+            "{doc_id, subject, snippet, sender, date} for the top-scoring queued "
+            "candidate, or {empty: true, hint: ...} when the queue is drained. "
+            "This is your Phase-2 entry point — always start each document by calling "
+            "this tool, then use the returned doc_id for read_document / classify / "
+            "propose_decision."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "read_document",
@@ -384,6 +401,8 @@ def _tool_result_message(tool_use_id: str, content, is_error: bool = False) -> d
     return {"role": "user", "content": [block]}
 
 
+
+
 # --------------------------------------------------------------------------- #
 # The loop                                                                     #
 # --------------------------------------------------------------------------- #
@@ -407,6 +426,9 @@ def run_batch(run_id: str) -> Iterator[dict]:
     }
 
     corrections = _load_recent_corrections(run_id)
+    # Corrections and criteria don't change mid-batch, so the system prompt is
+    # stable — build it ONCE. The queue lives on AgentRun (JSONField), not in the
+    # prompt; the LLM asks for the next doc via pop_next_document instead.
     system_prompt = build_orchestrator_system_prompt(
         criteria=run.criteria,
         batch_size=run.batch_size,
@@ -436,7 +458,10 @@ def run_batch(run_id: str) -> Iterator[dict]:
             yield {"type": "run_error", "data": {"error_type": "llm_unexpected", "message": str(e)}}
             return
 
-# ^^ fill in system_prompt for now
+        # Persist the assistant's turn so its tool_use blocks pair with the
+        # tool_result blocks we'll append after executing the tool. Anthropic
+        # rejects orphan tool_results, so this must NOT be skipped.
+        messages.append({"role": "assistant", "content": response.content})
 
         tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
         if not tool_use_blocks:
@@ -534,6 +559,26 @@ def run_batch(run_id: str) -> Iterator[dict]:
                 },
             }
             return
+
+        # ---- search_documents: absorb hits into the persistent queue and give the
+        #      LLM a compact summary instead of the raw doc_id list. Rationale: with
+        #      the pop_next_document design, doc_ids reach the LLM one-at-a-time via
+        #      pop; feeding a 20-hit list here just gives Haiku 20 ids to hallucinate
+        #      from later. The full result still lives in AgentStep.result for audit. #
+        if block.name == "search_documents" and isinstance(cleaned, list):
+            counts = absorb_search_hits(run_id, cleaned)
+            summary = {
+                "n_added_to_queue": counts["n_added"],
+                "n_duplicates_skipped": counts["n_duplicates"],
+                "total_queued": counts["total_queued"],
+                "hint": (
+                    "Candidates queued. Call pop_next_document to review the top-scoring one."
+                    if counts["total_queued"] > 0
+                    else "No candidates queued. Try a different query."
+                ),
+            }
+            messages.append(_tool_result_message(block.id, summary))
+            continue
 
         # ---- Post-tool: propose_decision + confidence-floor auto-handoff ---- #
         if block.name == "propose_decision" and isinstance(cleaned, dict) and cleaned.get("ok"):

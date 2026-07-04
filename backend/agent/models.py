@@ -19,6 +19,11 @@ class AgentRun(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="running")
     batch_size = models.IntegerField()
     current_batch_id = models.CharField(max_length=255, null=True, blank=True)
+    # Persistent batch queue: list of {doc_id, snippet} entries surfaced by
+    # search_documents and not yet popped. The agent fetches candidates via the
+    # pop_next_document tool; queue survives transcript truncation and crashes.
+    # Default is an empty list, not null, so pop_next_document can treat it uniformly.
+    current_batch_queue = models.JSONField(default=list, blank=True)
 
     class Meta:
         pass

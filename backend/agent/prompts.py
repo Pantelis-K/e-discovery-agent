@@ -67,25 +67,40 @@ criterion:
 HOW YOU WORK
 You operate in two phases within a batch.
 
-Phase 1 - build the queue. Issue a few search_documents calls (typically three to \
-five) to gather a candidate pool. The following are starting query seeds for this \
-topic - not a definition of relevance. Rephrase and broaden them so your searches \
-cover the whole criterion above (not just the literal words below), and leave the \
-actual responsiveness call to classify_relevance. Seeds: {seeds}. You may filter by \
-date range or custodian. Then stop searching and start reviewing.
+Phase 1 - build the queue. Issue UP TO 4 search_documents calls to gather a \
+candidate pool. Vary the wording of your queries so they cover the whole criterion \
+above (not just the literal words of the seeds); use the seeds as starting points, \
+not as a definition of relevance. Seeds for this topic: {seeds}. You may filter by \
+date range or custodian. Each search adds its top candidates to your batch queue; \
+you will NOT see the doc_ids directly - you will fetch them one at a time in Phase \
+2. After 4 searches STOP searching and move to Phase 2. A handful of well-worded \
+searches gives you a strong queue; more searches yield diminishing returns.
 
-Phase 2 - review each document in the queue, in order:
-  1. Call read_document to see it.
-  2. If the content hints at privilege - legal or confidentiality language, a \
+Phase 2 - review candidates from the queue, one at a time:
+  1. Call pop_next_document to fetch the next candidate. It returns \
+{{doc_id, subject, snippet, sender, date}} or {{empty: true}} when the queue is drained.
+  2. Call read_document with the doc_id you just received to see the full email.
+  3. If the content hints at privilege - legal or confidentiality language, a \
 lawyer involved, or a preservation/hold instruction - call check_privilege_signals. \
 You need not call it on every document.
-  3. Call classify_relevance to get a responsiveness judgement.
-  4. Propose a decision (relevance and privilege) and move to the next document.
-Do not search again during Phase 2 unless a document surfaces a genuinely new lead \
-you have not queried for; if so, one more search is fine, then continue reviewing.
+  4. Call classify_relevance to get a responsiveness judgement.
+  5. Call propose_decision (relevance and privilege) to record your proposal, then \
+pop the next document.
+Do NOT search again during Phase 2. If pop_next_document reports the queue is empty \
+and you still need more candidates, at most ONE additional search is fine.
 
 Call one tool per turn. When you have proposed decisions for about {batch_size} \
 documents, call finish_batch to hand the batch to the reviewer.
+
+DOCUMENT IDS ARE EXACT STRINGS
+Every doc_id you pass to read_document, check_privilege_signals, classify_relevance, \
+propose_decision, or request_human_review MUST be copied verbatim from the most \
+recent tool result that gave it to you (pop_next_document, or the echoed doc_id in \
+read_document / classify_relevance / check_privilege_signals). Do not shorten, \
+extend, substitute characters, or otherwise modify a doc_id - they are opaque \
+identifiers, not human-meaningful strings. If a tool returns "document not found", \
+you copied the id wrong: call pop_next_document to get a fresh candidate. Do NOT \
+run another search in response to a not-found error.
 
 PRIVILEGE - BE CONSERVATIVE
 Err toward flagging possible privilege rather than missing it. Instructions from \
@@ -131,6 +146,11 @@ def build_orchestrator_system_prompt(
     pass topic-appropriate seeds when swapping topics so they don't mismatch the
     criterion. batch_size is a soft nudge here - the loop holds the hard count (see
     handoff note).
+
+    Note: the queue is NOT rendered in the prompt. The LLM fetches candidates one at
+    a time via the pop_next_document tool; queue state lives on
+    AgentRun.current_batch_queue. This avoids Haiku hallucinating doc_ids it would
+    have had to copy from a long list.
     """
     seeds = query_seeds if query_seeds is not None else TOPIC_204_QUERY_SEEDS
     seeds_str = ", ".join(f'"{s}"' for s in seeds)

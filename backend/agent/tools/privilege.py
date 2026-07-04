@@ -224,9 +224,12 @@ def check_privilege_signals(doc_id: str) -> dict:
     # Match on the RESOLVED participant units (from_display is one unit or None;
     # to_/cc_display are lists), not the raw strings (spec §5 identity resolution).
     from_unit = doc.get("from_display")
-    return _compute_signals(
+    signals = _compute_signals(
         [from_unit] if from_unit else [],
         doc.get("to_display") or [],
         doc.get("cc_display") or [],
         doc.get("body"),
     )
+    # Echo doc_id so the orchestrator has a fresh copy on every turn — helps Haiku
+    # not lose the doc_id across the read → priv → classify → propose flow.
+    return {"doc_id": doc_id, **signals}

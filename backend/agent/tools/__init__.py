@@ -14,6 +14,7 @@ from agent.models import AgentRun
 
 from .classify import classify_relevance
 from .human_review import await_human_resolution
+from .pop_next import pop_next_document
 from .privilege import check_privilege_signals
 from .propose_decision import propose_decision
 from .read import read_document
@@ -23,6 +24,8 @@ from .search import search_documents
 def execute_tool(name, args, run_id):
     if name == "search_documents":
         return search_documents(args["query"], args.get("filters", {}), run_id)
+    elif name == "pop_next_document":
+        return pop_next_document(run_id)
     elif name == "read_document":
         return read_document(args["doc_id"])
     elif name == "check_privilege_signals":

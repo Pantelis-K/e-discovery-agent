@@ -167,6 +167,9 @@ def classify_relevance(doc_id: str, criteria: str) -> dict:
 
     judgment = tool_blocks[0].input or {}
     return {
+        # Echo doc_id so the orchestrator has a fresh copy on every turn — helps
+        # Haiku not lose the doc_id across the read → priv → classify → propose flow.
+        "doc_id": doc_id,
         "relevant": bool(judgment.get("relevant", False)),
         "confidence": _clamp_confidence(judgment.get("confidence")),
         "reasoning": str(judgment.get("reasoning", "")),
