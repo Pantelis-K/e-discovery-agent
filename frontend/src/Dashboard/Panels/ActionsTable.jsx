@@ -1,9 +1,9 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Box, Button, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography, useTheme } from '@mui/material'
 import ActionsTableRow from './ActionsTableRow'
 
 const COLUMNS = [
-    { label: 'Document', align: 'left', width: 220 },
+    { label: 'Document', align: 'left', width: 275 },
     { label: 'Rel', align: 'center', width: 50 },
     { label: 'Priv', align: 'center', width: 50 },
     { label: 'Reasoning', align: 'left' },
@@ -27,6 +27,14 @@ function buildRows() {
     return Array.from({ length: 25 }).map((_, i) => ({
         id: i + 1,
         document: `Document_${i + 1}.pdf`,
+        doc: {
+            doc_id: `Document_${i + 1}.pdf`,
+            subject: `Document_${i + 1}.pdf`,
+            body: '(placeholder row — real document batch not loaded yet)',
+            from_display: null,
+            to_display: [],
+            cc_display: [],
+        },
         relevant: false,
         privileged: false,
         reasoning: randomReasoning(),
@@ -34,16 +42,49 @@ function buildRows() {
     }))
 }
 
+const SUBJECT_MAX_LENGTH = 30
+const DOC_ID_MAX_LENGTH = 24
+
+function truncate(str, maxLength) {
+    if (!str || str.length <= maxLength) return str
+    return `${str.slice(0, maxLength - 1)}…`
+}
+
+function documentLabel(doc) {
+    if (doc.subject) return truncate(doc.subject, SUBJECT_MAX_LENGTH)
+    return `${truncate(doc.doc_id, DOC_ID_MAX_LENGTH)}`
+}
+
+function buildRowsFromDocuments(documents) {
+    return documents.map((doc, i) => ({
+        id: i + 1,
+        document: documentLabel(doc),
+        doc,
+        relevant: false,
+        privileged: false,
+        reasoning: '',
+        actioned: false,
+    }))
+}
+
 const API_BASE = 'http://localhost:8000/api'
 
-export default function ActionsTable({ caseItem, sx }) {
+export default function ActionsTable({ documents, onSelectDocument, sx }) {
     const theme = useTheme()
     const { muted } = theme.palette.brand
     const border = theme.palette.divider
+    // Mock placeholder rows until the real document batch arrives.
     const [rows, setRows] = useState(buildRows)
     // Keyed by row id so repeated edits to the same row collapse into one
     // entry holding its current state, not a history of every keystroke.
     const [changes, setChanges] = useState({})
+
+    useEffect(() => {
+        if (documents && documents.length > 0) {
+            setRows(buildRowsFromDocuments(documents))
+            setChanges({})
+        }
+    }, [documents])
 
     const updateRow = (id, fieldChanges) => {
         setRows((prev) => {
@@ -52,7 +93,7 @@ export default function ActionsTable({ caseItem, sx }) {
             setChanges((prevChanges) => ({
                 ...prevChanges,
                 [id]: {
-                    doc_id: updated.document,
+                    doc_id: updated.doc.doc_id,
                     relevant: updated.relevant,
                     privileged: updated.privileged,
                     reasoning: updated.reasoning,
@@ -119,7 +160,12 @@ export default function ActionsTable({ caseItem, sx }) {
                     </TableHead>
                     <TableBody>
                         {rows.map((row) => (
-                            <ActionsTableRow key={row.id} row={row} onChange={(fieldChanges) => updateRow(row.id, fieldChanges)} />
+                            <ActionsTableRow
+                                key={row.id}
+                                row={row}
+                                onChange={(fieldChanges) => updateRow(row.id, fieldChanges)}
+                                onSelectDocument={onSelectDocument}
+                            />
                         ))}
                     </TableBody>
                 </Table>

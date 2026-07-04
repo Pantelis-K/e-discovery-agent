@@ -1,6 +1,5 @@
 from rest_framework import status
 from rest_framework.decorators import api_view
-from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 
 from agent.models import AgentRun, Correction
@@ -19,13 +18,15 @@ def health(request):
     return Response({"status": "ok", "service": "e-discovery-backend"})
 
 
+# TODO: replace with the real batch queue (search_documents results for the
+# active run) once the agent loop populates one — see spec §2 "queue population".
+DEV_BATCH_SIZE = 25
+
+
 @api_view(["GET"])
-def document_detail(request, doc_id):
-    try:
-        doc = Document.objects.get(pk=doc_id)
-    except Document.DoesNotExist:
-        raise NotFound(f"document not found: {doc_id}")
-    return Response(DocumentSerializer(doc).data)
+def get_document_batch(request):
+    docs = Document.objects.order_by("?")[:DEV_BATCH_SIZE]
+    return Response(DocumentSerializer(docs, many=True).data)
 
 
 @api_view(["POST"])

@@ -87,7 +87,7 @@ class DocumentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Document
-        fields = ["subject", "body", "from_display", "to_display", "cc_display"]
+        fields = ["doc_id", "subject", "body", "from_display", "to_display", "cc_display"]
 
     def get_from_display(self, obj):
         return _parse_display_json(obj.from_display, None)

@@ -1,15 +1,42 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Container, Grid, Paper, Typography, Box, useTheme, Stack } from '@mui/material'
 import ActionsTable from './Panels/ActionsTable'
-import TopRight from './Panels/ActiveDocument'
-import BottomLeft from './Panels/Reasoning'
-import BottomRight from './Panels/Timeline'
+import ActiveDocument from './Panels/ActiveDocument'
+import Reasoning from './Panels/Reasoning'
+import Timeline from './Panels/Timeline'
+
+const API_BASE = 'http://localhost:8000/api'
 
 export default function Dashboard({ cases }) {
     const [selectedCase, setSelectedCase] = useState(null)
+    const [documents, setDocuments] = useState([])
+    const [activeDocument, setActiveDocument] = useState(null)
     const theme = useTheme()
     const { palette } = theme
     const { accent, highlight } = palette.brand
+
+    useEffect(() => {
+        if (!selectedCase) return
+
+        let cancelled = false
+
+        fetch(`${API_BASE}/documents/batch/`)
+            .then((res) => {
+                if (!res.ok) throw new Error(`Failed to fetch document batch: ${res.status}`)
+                return res.json()
+            })
+            .then((data) => {
+                console.log('document batch:', data)
+                if (cancelled) return
+                setDocuments(data)
+                setActiveDocument((prev) => prev ?? data[0] ?? null)
+            })
+            .catch((err) => console.error('Failed to load document batch:', err))
+
+        return () => {
+            cancelled = true
+        }
+    }, [selectedCase])
 
     if (selectedCase) {
         return (
@@ -35,10 +62,10 @@ export default function Dashboard({ cases }) {
                         minHeight: 0,
                     }}
                 >
-                    <ActionsTable caseItem={selectedCase} sx={{ gridArea: 'tl' }} />
-                    <TopRight caseItem={selectedCase} sx={{ gridArea: 'tr' }} />
-                    <BottomLeft caseItem={selectedCase} sx={{ gridArea: 'bl' }} />
-                    <BottomRight caseItem={selectedCase} sx={{ gridArea: 'br' }} />
+                    <ActionsTable documents={documents} onSelectDocument={setActiveDocument} sx={{ gridArea: 'tl' }} />
+                    <ActiveDocument document={activeDocument} sx={{ gridArea: 'tr' }} />
+                    <Reasoning sx={{ gridArea: 'bl' }} />
+                    <Timeline sx={{ gridArea: 'br' }} />
                 </Box>
             </Container>
         )
