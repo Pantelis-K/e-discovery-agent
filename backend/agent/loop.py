@@ -464,11 +464,10 @@ def run_batch(run_id: str) -> Iterator[dict]:
             yield {"type": "run_error", "data": {"error_type": "llm_unexpected", "message": str(e)}}
             return
 
-        # Persist the assistant's turn so its tool_use blocks pair with the
-        # tool_result blocks we'll append after executing the tool. Anthropic
-        # rejects orphan tool_results, so this must NOT be skipped.
-        messages.append({"role": "assistant", "content": response.content})
-
+        # The assistant's turn is appended in one of the two branches below — NOT
+        # unconditionally here. If we appended once here AND again in the branch,
+        # Anthropic would see two consecutive assistant messages carrying the same
+        # tool_use id and 400 with "tool_use ids must be unique".
         tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
         if not tool_use_blocks:
             malformed_streak += 1
