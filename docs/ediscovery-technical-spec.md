@@ -299,7 +299,11 @@ Removed in revision 1 and still cut. Reasoning: in mental simulation of typical 
 }
 ```
 
-**Data source.** SQLite (participants, body), plus a hardcoded list of known Enron in-house counsel and external counsel domains. Content regex over the body for phrases like "privileged and confidential," "attorney work product," "seeking legal advice," and — relevant to Topic 204 — "litigation hold," "preservation notice," "do not delete."
+**Data source.** All signals are computed **live at call time** — there is no precomputed
+`privilege_signals` cache (dropped; see §6). SQLite (participants, body), plus a hardcoded
+list of known Enron in-house counsel and external counsel domains. Content regex over the
+body for phrases like "privileged and confidential," "attorney work product," "seeking legal
+advice," and — relevant to Topic 204 — "litigation hold," "preservation notice," "do not delete."
 
 **Deterministic or LLM.** Deterministic. Explicitly not LLM-based. Rationale: this tool exists precisely so the privilege triage logic is auditable and defensible. If a judge later asks "why did you flag this as privileged," the answer is a structured signal set, not "the LLM said so." The LLM interprets the signals into a decision, but the signals themselves are produced by transparent rules.
 
@@ -340,7 +344,13 @@ layer (see §2 corrections propagation), never inside `classify_relevance`. See
 
 **Latency.** 2–5 seconds per call.
 
-**Errors.** LLM refusal (rare, handled as above), rate limit (backoff), malformed structured output (retry with a stricter prompt, then error).
+**Errors.** Structured output is obtained via a **forced `record_judgment` tool call**
+(`tool_choice` pins the tool to the RelevanceJudgment schema), so the output shape is
+enforced up front — there is no JSON-fence-stripping and no malformed-output retry path.
+The returned `.input` dict is defensively coerced (confidence clamped to [0,1],
+`key_passages` forced to a string list). Remaining error modes: LLM refusal (rare —
+handled as above), rate limits / 529 overload (exponential backoff with jitter, error
+after MAX_RETRIES), and the near-impossible empty-tool-block case (treated as a hard error).
 
 ### `request_human_review`
 
@@ -516,7 +526,9 @@ Ingestion is now two Django management commands (replacing the standalone `inges
 4. Parses each file: split header block from body at the first blank line; extract available header fields (`Date`, `X-SDOC`, `X-ZLID` always; `Subject`/`From`/`To`/`Cc` when present); strip the ZL boilerplate footer; capture the body; note any `Attachment:` line for metadata (the attachment itself is not ingested).
 5. Normalises participants across the three address forms; stores raw forms plus a canonical key where resolvable. Custodian is taken from the directory name.
 6. Inserts into the `documents` table (see section 6), with `doc_id` = filename stem.
-7. Populates participant-based privilege signals in `privilege_signals` against the hardcoded lawyer list.
+7. 7. (removed) Privilege signals are **not** precomputed at ingestion. `check_privilege_signals`
+   computes all signals live at call time (the `privilege_signals` cache was dropped —
+   see §3 / §6 / decisions.md 2026-07-03). Ingestion touches no privilege state.
 
 `embed_documents` logic:
 
@@ -685,7 +697,8 @@ Write: only by `ingest_documents` (and eval-mode upserts for judged doc-ids — 
 
 **Note on nullability:** `subject`, `from_addr`, `to_addrs`, `cc_addrs` are frequently null by nature of the corpus (see section 5). This is expected, not an ingestion bug. The only unconditionally-reliable fields are `doc_id`, `x_sdoc`, `x_zlid`, `date`, `custodian`, and `body`.
 
-### `privilege_signals` (cache)
+### `privilege_signals` (cache) — DROPPED from build scope (decision 2026-07-03)
+
 
 Participant-based signals populated during ingestion (against the lawyer list, using SMTP / CN-code / display-name matching); content and context signals computed at call time and merged.
 
@@ -700,6 +713,17 @@ has_confidentiality_marker  BOOLEAN
 has_legal_advice_language   BOOLEAN
 matched_phrases             TEXT   -- JSON array
 ```
+
+(decision 2026-07-03)
+
+
+Not built. `check_privilege_signals` computes participant, content, and context signals
+**live at call time** from the `documents` row (a substring scan of one body plus matching a
+handful of participants against ~10 lawyers is millisecond-cheap on a single document, so a
+precompute has no demo-scale payoff and real dependency cost). No model, no migration, no
+ingestion coupling. If the cache is ever wanted for scale, `privilege.py::_compute_signals`
+is exactly the logic ingestion would run. See decisions.md 2026-07-03, Decision 3.
+
 
 ### `agent_runs`
 
@@ -803,7 +827,9 @@ Written by a lightweight event writer that other write paths call. Indexed on `r
 
 1. Orchestrator call begins. Read from SQLite: `agent_runs` (current run state), `agent_steps` for the current `run_id` ordered by iteration DESC LIMIT 3 (the transcript window), `corrections` for the current `run_id` ordered by created_at DESC LIMIT 10.
 2. LLM responds with a tool call. Write: `agent_steps` row with `started_at` set, `completed_at` null.
-3. Tool executes. Reads its specific tables — `documents` for `read_document`, `privilege_signals` for `check_privilege_signals`, Chroma plus a `decisions` filter for `search_documents`.
+3. 3. Tool executes. Reads its specific tables — `documents` for `read_document`; `documents`
+   (participants + body) for `check_privilege_signals`, which computes all signals live (no
+   cache); Chroma plus a `decisions` filter for `search_documents`.
 4. Tool returns. Update the `agent_steps` row with `result`, `completed_at`, tokens.
 5. If the tool was `classify_relevance`, additionally write a `decisions` row with `committed=0` and an `audit_events` row.
 6. Stream SSE events to frontend after each write (i.e. `yield` from the generator).
@@ -947,6 +973,9 @@ Both own the loop conceptually; the spec remains the tie-breaker.
 - [~] Stop conditions — confidence floor + iteration cap sketched; add batch-complete + error-budget (3-strike)
 - [~] `finish_batch` handling (sketched)
 - [ ] Model + batch-size config (Haiku/Sonnet, 5/25) as config variables (currently hardcoded Haiku)
+- [ ] classify_relevance wiring for Decision 1: the LLM-facing schema exposes **only `doc_id`**
+      (drop `criteria`); the dispatch injects `AgentRun.criteria` via `run_id`. Currently
+      `execute_tool` reads `args["criteria"]`, which will KeyError once the schema omits it.
 
 ### D. Backend — tools  (files exist; content partial)
 
