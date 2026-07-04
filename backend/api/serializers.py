@@ -1,8 +1,10 @@
+import json
 import re
 
 from rest_framework import serializers
 
 from agent.models import Correction
+from documents.models import Document
 
 REASON_MAX_LENGTH = 200
 _VALUE_PATTERN = re.compile(r'^rel: (0|1), priv: (0|1), reason: "(.*)"$', re.DOTALL)
@@ -65,3 +67,33 @@ class RowCorrectionSerializer(serializers.Serializer):
     relevant = serializers.BooleanField()
     privileged = serializers.BooleanField()
     reasoning = serializers.CharField(max_length=REASON_MAX_LENGTH, allow_blank=True, trim_whitespace=False)
+
+
+def _parse_display_json(value, default):
+    """from_display/to_display/cc_display are stored as JSON-encoded TEXT
+    (documents.participants unit shape); decode for the API response."""
+    if not value:
+        return default
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return default
+
+
+class DocumentSerializer(serializers.ModelSerializer):
+    from_display = serializers.SerializerMethodField()
+    to_display = serializers.SerializerMethodField()
+    cc_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Document
+        fields = ["subject", "body", "from_display", "to_display", "cc_display"]
+
+    def get_from_display(self, obj):
+        return _parse_display_json(obj.from_display, None)
+
+    def get_to_display(self, obj):
+        return _parse_display_json(obj.to_display, [])
+
+    def get_cc_display(self, obj):
+        return _parse_display_json(obj.cc_display, [])
